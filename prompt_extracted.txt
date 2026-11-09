@@ -1,0 +1,216 @@
+Build a Klipit.ai-Inspired Smart Document Reader
+1. Project Objective
+Build a simple, modern AI-powered document-reading web application inspired by the receipt details experience of Klipit.ai.
+The application's main purpose is to let users upload or photograph any bill, invoice, receipt, purchase order, or similar document. The application must read the document, extract its information, organise the information into structured fields, and display the result in a clean digital receipt/details screen.
+The primary workflow must be:
+Upload document → Process document → Extract information → Display results → Edit → Save → Export
+Keep the application simple. Do not build unnecessary HRMS, employee management, payroll, reimbursement approval workflows, or complex enterprise dashboards.
+2. Main Screen Design
+Create a single, clean, responsive application interface called SmartBill AI.
+A. Application Header
+Include:
+Application name and logo: SmartBill AI.
+A simple navigation menu.
+A document history option.
+A settings option.
+A responsive layout for desktop, tablet and mobile.
+B. Upload Section
+Create a prominent upload card in the centre of the home screen.
+It must support:
+Drag-and-drop file uploads.
+Browse and select files.
+Camera capture on supported mobile devices.
+Multiple file uploads.
+Image formats: JPG, JPEG, PNG and WebP.
+PDF documents, including multi-page PDFs.
+Display supported file formats and maximum file size clearly.
+After the user selects a file, display its filename, thumbnail or preview, file size, and a Remove or Replace option.
+Add a clear primary button labelled Read Document.
+Do not start processing until the user clicks this button.
+C. Document Processing
+When the user clicks Read Document:
+Validate the file.
+Upload it securely to the backend.
+Extract text using OCR or a suitable document-reading service.
+Use an AI model to identify and structure the extracted information.
+Validate the extracted data.
+Display the results on the receipt details screen.
+Show processing states such as:
+Uploading document.
+Reading document.
+Extracting information.
+Validating details.
+Completed.
+If processing fails, display a helpful error message and a Retry button.
+Do not display fake processing results or hardcoded document information.
+3. Receipt Details Screen
+Design a details screen inspired by Klipit.ai's receipt details interface.
+A. Document Summary Card
+At the top, display:
+Original document thumbnail.
+Document type.
+Merchant or supplier name.
+Invoice or receipt number.
+Document date.
+Total amount and currency.
+Number of extracted line items.
+Processing or review status.
+Include an option to open or enlarge the original document.
+B. Digital Receipt Card
+Create a visually clear receipt card containing the extracted information.
+Display:
+Merchant or supplier name.
+Address, if available.
+Invoice number.
+Invoice date.
+Due date, if available.
+Tax or GST details, if present.
+Line-item table.
+Subtotal.
+Discount, if applicable.
+Tax amount.
+Total amount.
+Each line item should contain:
+Item description.
+Category.
+Quantity.
+Unit price.
+Tax, when available.
+Line total.
+Use Indian Rupee formatting for INR documents and preserve the detected currency for other documents.
+Do not force every document into a retail-receipt format. Use the appropriate fields for invoices, bills, purchase orders and other document types.
+C. Edit Details
+Provide an Edit button.
+When clicked, allow the user to correct extracted fields, line items, dates, amounts, categories and merchant information.
+Provide Save Changes and Cancel buttons.
+Recalculate totals when appropriate, and clearly identify any mismatch between the entered values and the document's stated total.
+Never silently change the source document.
+D. Tags Section
+Add an All Tags section with an Add Tag button.
+Allow users to:
+Add custom tags.
+Remove tags.
+Categorise documents, for example Travel, Medical, Fuel, Office Supplies, Purchase, Utility Bill and Other.
+Tags must be editable and saved with the document.
+AI-suggested categories must be marked as suggestions until confirmed where the classification is uncertain.
+E. Document Actions
+Include these actions:
+Edit.
+Save.
+Download original document.
+Export extracted data as JSON.
+Export to CSV or Excel.
+Generate a PDF summary.
+Share a document using a secure, access-controlled method.
+Do not create public document links by default.
+4. AI Extraction Requirements
+The AI must extract information from printed and handwritten documents where possible.
+Support:
+Bills and receipts.
+Supplier invoices.
+Tax invoices.
+Purchase orders.
+Transport bills.
+Fuel bills.
+Medical bills.
+Utility bills.
+Other uploaded documents.
+Extract fields appropriate to the document type, such as:
+Merchant or supplier.
+Customer, where present.
+Invoice number.
+Invoice date.
+Due date.
+Currency.
+Item descriptions.
+Quantities.
+Unit prices.
+Tax and GST amounts.
+Subtotal.
+Total.
+Payment status, if explicitly stated.
+Document category.
+Use OCR for text recognition and an AI model for structured extraction.
+For handwritten documents, preserve uncertain text and allow manual correction.
+Never invent missing invoice numbers, dates, item descriptions, quantities, tax amounts or totals.
+If a field cannot be read confidently, return null or mark it as uncertain and request user review.
+Keep the original uploaded document accessible beside or above the extracted information so users can compare the result with the source.
+5. Example Expected Output
+For a document containing a total of ₹3,100, the interface might display:
+Merchant: Sri Siddeshwara Medical & General Stores.
+Invoice number: 783.
+Date: 24/10/2026, subject to verification.
+Currency: INR.
+Line item: Transport, only if supported by the document or confirmed by the user.
+Category: Travel, if confirmed or confidently classified.
+Quantity: 1, if supported by the extracted document.
+Total: ₹3,100, subject to validation.
+This is an illustrative example. Never use these values as fixed demo output for uploaded documents.
+6. User Interface and Design
+Use a clean, modern visual style inspired by digital receipt applications.
+Design requirements:
+Light background with subtle green accents.
+White cards with rounded corners.
+Clear typography and readable spacing.
+A prominent upload area.
+A compact document summary.
+A detailed digital receipt card.
+Clearly visible Edit and Save actions.
+Responsive mobile and desktop layouts.
+Loading indicators, success messages, and error states.
+Accessible labels, keyboard navigation, and suitable colour contrast.
+On mobile, stack the document summary and receipt details vertically.
+On desktop, allow the original document preview and extracted information to appear side by side when space permits.
+Avoid unnecessary animations, oversized dashboards, and excessive decorative elements.
+7. Document History
+Create a simple history page listing previously processed documents.
+Display:
+Thumbnail.
+Merchant or document title.
+Document type.
+Date.
+Total amount, when applicable.
+Processing status.
+View and Delete actions.
+Provide search and filters by date, document type, merchant and status.
+Ask for confirmation before permanently deleting a document. Handle the original file and extracted data according to the application's retention policy.
+8. Technical Requirements
+First inspect the existing project, if any. Reuse its working code and architecture where practical.
+If starting from scratch, use:
+Frontend: React and TypeScript.
+Backend: Python and FastAPI.
+Database: PostgreSQL.
+OCR: A suitable OCR or document AI service.
+AI extraction: A vision-capable model with structured JSON output.
+Storage: Private file storage.
+Keep API credentials in server-side environment variables. Never expose secret keys in frontend code.
+Create a backend processing endpoint, for example POST /api/documents/process, and suitable endpoints for document history, details, editing, saving and exporting.
+Validate file types, file sizes, request data and access permissions. Protect uploaded documents from unauthorised access.
+Store the original document separately from the extracted data. Save extraction status, errors and review status so users can retry failed processing.
+Use structured validation to ensure extracted data is consistent. Do not mark a document as successfully processed if the extraction failed.
+9. Development Rules
+Inspect the existing project before modifying files.
+Do not delete working features or replace the existing application unnecessarily.
+Build the upload-to-results workflow first.
+Use real backend processing, not hardcoded or fabricated OCR output.
+Clearly separate the frontend, backend, database and AI/OCR integration.
+Provide a sample environment configuration without real secrets.
+Handle API failures and invalid uploads.
+Add tests for file uploads, extraction, editing, saving and exporting.
+Explain any external API keys or paid services required.
+Provide beginner-friendly instructions for installation and running the project.
+10. Acceptance Criteria
+The application is complete for its first version when:
+A user can upload an image or PDF.
+The application reads the actual uploaded document.
+Extracted details appear on a receipt-style details screen.
+The original document can be viewed.
+The user can correct extracted values.
+The user can add and remove tags.
+Changes can be saved to the database.
+The user can view previously processed documents.
+Extracted information can be exported.
+Unreadable or uncertain fields are identified rather than fabricated.
+The application works on desktop and mobile.
+Invalid files and processing failures are handled correctly.
+Build this as a simple, reliable document-reading application. Prioritise extraction accuracy, a clear receipt-details screen, editable results and a smooth upload-to-save experience.
