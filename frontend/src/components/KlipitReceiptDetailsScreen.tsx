@@ -40,6 +40,7 @@ export const KlipitReceiptDetailsScreen: React.FC<KlipitReceiptDetailsScreenProp
   const [isLightboxOpen, setIsLightboxOpen] = useState(false);
   const [isAddingTag, setIsAddingTag] = useState(false);
   const [newTagInput, setNewTagInput] = useState('');
+  const [thumbLoadError, setThumbLoadError] = useState(false);
 
   const isPdf = doc.mime_type === 'application/pdf' || doc.filename.toLowerCase().endsWith('.pdf');
   const fileUrl = resolveAssetUrl(doc.file_url || api.getOriginalFileUrl(doc.id));
@@ -175,15 +176,16 @@ export const KlipitReceiptDetailsScreen: React.FC<KlipitReceiptDetailsScreenProp
               onClick={() => setIsLightboxOpen(true)}
               title="Click to view full preview"
             >
-              {thumbUrl || fileUrl ? (
+              {!thumbLoadError && (thumbUrl || fileUrl) ? (
                 <img
                   src={thumbUrl || fileUrl}
                   alt={doc.merchant_name || 'Receipt'}
                   className="klipit-top-thumbnail-img"
+                  onError={() => setThumbLoadError(true)}
                 />
               ) : (
                 <div className="klipit-top-thumb-placeholder">
-                  <span>📄</span>
+                  <span style={{ fontSize: '1.4rem' }}>🧾</span>
                 </div>
               )}
               <div className="klipit-zoom-overlay">

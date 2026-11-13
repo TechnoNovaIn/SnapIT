@@ -76,7 +76,7 @@ class OCRService:
                     return setting.value.strip()
         except Exception:
             pass
-        return os.getenv("GEMINI_MODEL", settings.GEMINI_MODEL)
+        return os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
     @classmethod
     def extract_document(cls, file_path: Path, mime_type: str) -> Dict[str, Any]:
@@ -87,8 +87,11 @@ class OCRService:
         api_key = cls.get_configured_api_key()
         model_name = cls.get_configured_model()
 
-        if api_key:
-            candidate_models = [model_name, "gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-3.5-flash"]
+        # Check if api_key is valid Google AI Studio format (starts with AIzaSy)
+        is_valid_google_key = bool(api_key and len(api_key) > 25 and not api_key.startswith("AQ."))
+
+        if is_valid_google_key:
+            candidate_models = [model_name, "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
             # Deduplicate while preserving order
             seen = set()
             unique_models = [m for m in candidate_models if m and not (m in seen or seen.add(m))]
@@ -101,6 +104,9 @@ class OCRService:
                         return result
                 except Exception as e:
                     print(f"[OCRService] Gemini model {candidate} error: {e}. Trying next...")
+        else:
+            if api_key and api_key.startswith("AQ."):
+                print("[OCRService] Note: GEMINI_API_KEY appears to be an OAuth/unsupported token rather than a Google AI Studio key (AIzaSy...). Falling back to local OCR engine.")
 
         print("[OCRService] Using local extraction engine...")
         return cls._extract_with_local_engine(file_path, mime_type)
@@ -208,9 +214,11 @@ class OCRService:
     def _parse_text_heuristically(cls, text: str, filename: str) -> Dict[str, Any]:
         """
         Parses text lines to extract real merchant, dates, invoice numbers, currency, line items, and totals.
+        Strictly excludes mobile/phone numbers and tax IDs from becoming merchant names.
         """
         uncertain_fields = []
-        lines = [line.strip() for line in text.split("\n") if line.strip()]
+        lines = [line.strip() for line in re.split(r'[\r\n]+', text) if line.strip()]
+        cleaned_text = re.sub(r'[ \t]+', ' ', text)
 
         # 1. Currency
         currency = "INR"
@@ -221,20 +229,90 @@ class OCRService:
         elif "£" in text or "GBP" in text:
             currency = "GBP"
 
-        # 2. Merchant Name
+        # 2. Merchant Name Extraction
         merchant_name = None
         merchant_address = None
-        if lines:
-            # Check lines for business names
-            for candidate in lines[:4]:
-                cand_lower = candidate.lower()
-                if len(candidate) > 2 and not any(k in cand_lower for k in ["invoice", "receipt", "tax", "page", "date", "bill no", "phone", "gst"]):
-                    merchant_name = candidate
-                    break
 
-            for line in lines[1:5]:
-                line_lower = line.lower()
-                if any(w in line_lower for w in ["road", "street", "nagar", "lane", "floor", "hubballi", "bangalore", "mumbai", "delhi", "circle"]):
+        def is_phone_or_contact(s: str) -> bool:
+            c = s.strip()
+            if re.match(r'^(?:mob|mobile|cell|phone|ph|tel|contact|call|fax|helpline|care)[\s.:/|-]*', c, re.I):
+                return True
+            digits = re.findall(r'\d', c)
+            if len(digits) >= 8 and len(digits) / max(len(c), 1) > 0.35:
+                return True
+            return False
+
+        def is_tax_or_header(s: str) -> bool:
+            c = s.strip()
+            # Customer / patient lines
+            if re.search(r'\b(?:patient|customer|buyer|client|billed\s*to|ship\s*to)\b', c, re.I):
+                return True
+            # Tax and registration lines
+            if re.match(r'^(?:gstin|gst|vat|tin|pan|cin|fssai|dl\s*no|d\.l\.|tan|regd)[\s.:/|-]*', c, re.I):
+                return True
+            # Bill / Invoice type headers or total rows
+            if re.match(r'^(?:tax\s*invoice|retail\s*invoice|cash\s*memo|cash\s*bill|estimate|quotation|receipt|bill\s*no|invoice\s*no|date|time|welcome|original|duplicate|triplicate|total|subtotal|grand\s*total|net\s*payable|amount|amt|balance)[\s.:/|-]*', c, re.I):
+                return True
+            # Spiritual invocation check only for short isolated headers (e.g. "|| Om ||" or "|| Sri ||")
+            if re.match(r'^(?:\|\||//)\s*(?:om|sri|shri|shree|jai|bismillah|allah|786)\s*(?:\|\||//)?$', c, re.I):
+                return True
+            return False
+
+        def is_address_text(s: str) -> bool:
+            c = s.strip().lower()
+            address_words = [
+                "station road", "road", "street", "nagar", "colony", "layout", "cross", "main",
+                "floor", "bldg", "building", "complex", "plot", "shop no", "opp", "opposite",
+                "near", "behind", "beside", "circle", "hubballi", "bangalore", "bengaluru",
+                "mumbai", "delhi", "chennai", "hyderabad", "pune", "karnataka", "maharashtra",
+                "pin", "pincode", "dist", "district"
+            ]
+            return any(w in c for w in address_words)
+
+        valid_merchant_candidates = []
+        for line in lines[:8]:
+            if is_phone_or_contact(line) or is_tax_or_header(line):
+                continue
+            if is_address_text(line):
+                if not merchant_address:
+                    merchant_address = line
+                continue
+            
+            letters = re.findall(r'[A-Za-z]', line)
+            if len(letters) < 3 or len(line) > 80:
+                continue
+            
+            digits = re.findall(r'\d', line)
+            if len(digits) / len(line) > 0.30:
+                continue
+            
+            valid_merchant_candidates.append(line)
+
+        if valid_merchant_candidates:
+            biz_keywords = [
+                "medical", "store", "stores", "general", "pharmacy", "hospital", "clinic",
+                "hotel", "restaurant", "bazaar", "mart", "supermarket", "enterprise",
+                "enterprises", "traders", "agency", "agencies", "transport", "logistics",
+                "motors", "services", "ltd", "pvt", "co.", "company", "cafe", "bakers"
+            ]
+            for cand in valid_merchant_candidates:
+                if any(k in cand.lower() for k in biz_keywords):
+                    merchant_name = cand
+                    break
+            if not merchant_name:
+                merchant_name = valid_merchant_candidates[0]
+
+        # Single-block text fallback (e.g. winocr without newlines)
+        if not merchant_name:
+            m = re.search(r'^\s*([A-Za-z0-9\s&().,\'-]{3,60}?)(?=\s+(?:station\s*road|road|street|nagar|gstin|phone|mob|cell|bill\s*no|tax\s*invoice|date)\b)', text, re.I)
+            if m:
+                cand = m.group(1).strip()
+                if not is_phone_or_contact(cand) and not is_tax_or_header(cand) and not is_address_text(cand):
+                    merchant_name = cand
+
+        if not merchant_address and lines:
+            for line in lines[1:6]:
+                if is_address_text(line):
                     merchant_address = line
                     break
 
@@ -272,14 +350,74 @@ class OCRService:
         subtotal = None
         tax_amount = None
 
-        total_match = re.search(
-            r'(?:grand\s*total|net\s*amount|total\s*amount|amount\s*payable|balance\s*due|total)[:.\s]*(?:inr|usd|eur|gbp|rs\.?|₹|\$|€|£)?\s*([\d,]+\.?\d*)',
-            text,
-            re.IGNORECASE
+        # Level A: High-confidence labeled totals
+        high_conf_pattern = re.findall(
+            r'(?:grand\s*total|net\s*payable|amount\s*payable|net\s*amount|total\s*amount|bill\s*amount|final\s*amount|balance\s*due)\s*[:.\s-]*(?:inr|rs\.?|₹|\$|€|£)?\s*([\d,]+(?:\.\d{1,2})?)\s*(?:\/-)?',
+            cleaned_text,
+            re.I
         )
-        if total_match:
+        if high_conf_pattern:
+            for val in reversed(high_conf_pattern):
+                try:
+                    num = float(val.replace(',', ''))
+                    if num > 0:
+                        total_amount = num
+                        break
+                except ValueError:
+                    pass
+
+        # Level B: Explicit currency amount (e.g. INR 3100.00 or Rs. 550/-)
+        if total_amount is None:
+            currency_matches = re.findall(r'(?:inr|rs\.?|₹)\s*([\d,]+(?:\.\d{1,2})?)\s*(?:\/-)?', cleaned_text, re.I)
+            if currency_matches:
+                valid_nums = []
+                for val in currency_matches:
+                    try:
+                        num = float(val.replace(',', ''))
+                        if num > 0:
+                            valid_nums.append(num)
+                    except ValueError:
+                        pass
+                if valid_nums:
+                    total_amount = valid_nums[-1]
+
+        # Level C: Generic Total / Amt / Amount
+        if total_amount is None:
+            total_matches = re.findall(
+                r'\b(?:total|amount|amt|paid)\s*[:.\s-]*(?:inr|rs\.?|₹|\$|€|£)?\s*([\d,]+(?:\.\d{1,2})?)\s*(?:\/-)?',
+                cleaned_text,
+                re.I
+            )
+            if total_matches:
+                valid_totals = []
+                for val in total_matches:
+                    try:
+                        num = float(val.replace(',', ''))
+                        if num > 0:
+                            valid_totals.append(num)
+                    except ValueError:
+                        pass
+                if valid_totals:
+                    total_amount = max(valid_totals)
+
+        # Level D: Trailing numbers with /- e.g. 550/-
+        if total_amount is None:
+            slash_matches = re.findall(r'\b([\d,]+(?:\.\d{1,2})?)\s*\/-', cleaned_text)
+            if slash_matches:
+                for val in reversed(slash_matches):
+                    try:
+                        num = float(val.replace(',', ''))
+                        if num > 0:
+                            total_amount = num
+                            break
+                    except ValueError:
+                        pass
+
+        # Subtotal match
+        sub_match = re.search(r'(?:subtotal|sub\s*total)\s*[:.\s-]*(?:inr|rs\.?|₹|\$|€|£)?\s*([\d,]+\.?\d*)', cleaned_text, re.I)
+        if sub_match:
             try:
-                total_amount = float(total_match.group(1).replace(",", ""))
+                subtotal = float(sub_match.group(1).replace(",", ""))
             except ValueError:
                 pass
 
@@ -288,7 +426,6 @@ class OCRService:
 
         # 7. Line items parsing
         line_items = []
-        # Look for table rows: text description followed by quantity, price, amount
         row_regex = re.compile(r'([A-Za-z0-9\s&()\-]{3,35})\s+(\d+(?:\.\d+)?)\s+([\d,]+(?:\.\d+)?)\s+([\d,]+(?:\.\d+)?)')
         for line in lines:
             m = row_regex.search(line)
@@ -311,7 +448,7 @@ class OCRService:
                     except ValueError:
                         pass
 
-        # If no items found through row regex, create a single item matching the total if known, or mark items uncertain
+        # If no items found through row regex, create a single item matching the total if known
         if not line_items and total_amount:
             line_items.append({
                 "description": merchant_name or "General Purchase",
@@ -332,18 +469,18 @@ class OCRService:
             doc_type = "Tax Invoice"
         elif "purchase order" in text_lower or "p.o." in text_lower:
             doc_type = "Purchase Order"
-        elif "medical" in text_lower or "pharmacy" in text_lower or "hospital" in text_lower or "rx" in text_lower:
+        elif any(w in text_lower for w in ["medical", "pharmacy", "hospital", "rx", "medicine", "tablets", "pharma"]):
             doc_type = "Medical Bill"
-        elif "fuel" in text_lower or "petrol" in text_lower or "diesel" in text_lower:
+        elif any(w in text_lower for w in ["fuel", "petrol", "diesel", "cng"]):
             doc_type = "Fuel Bill"
-        elif "electricity" in text_lower or "utility" in text_lower or "water bill" in text_lower:
+        elif any(w in text_lower for w in ["electricity", "utility", "water bill"]):
             doc_type = "Utility Bill"
-        elif "transport" in text_lower or "freight" in text_lower or "trip" in text_lower or "toll" in text_lower:
+        elif any(w in text_lower for w in ["transport", "freight", "trip", "toll", "logistics"]):
             doc_type = "Transport Bill"
 
         tags = [doc_type]
         if merchant_name:
-            tags.append(merchant_name[:15].strip())
+            tags.append(merchant_name[:20].strip())
 
         return {
             "document_type": doc_type,
@@ -355,12 +492,12 @@ class OCRService:
             "due_date": None,
             "tax_id": tax_id,
             "currency": currency,
-            "subtotal": subtotal or total_amount,
+            "subtotal": subtotal or total_amount or 0.0,
             "discount": 0.0,
-            "tax_amount": tax_amount,
-            "total_amount": total_amount,
+            "tax_amount": tax_amount or 0.0,
+            "total_amount": total_amount or 0.0,
             "payment_status": "Paid" if "paid" in text_lower else "Pending",
-            "confidence_score": 0.75 if total_amount and merchant_name else 0.50,
+            "confidence_score": 0.85 if total_amount and merchant_name else 0.50,
             "tags": tags,
             "uncertain_fields": uncertain_fields,
             "line_items": line_items

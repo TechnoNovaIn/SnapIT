@@ -1,5 +1,7 @@
 import uuid
 import re
+import base64
+from pathlib import Path
 from typing import List, Optional, Any, Dict
 from datetime import datetime
 from fastapi import APIRouter, Depends, Header, HTTPException, Body
@@ -9,6 +11,7 @@ from sqlalchemy import desc, or_
 from ..database import get_db
 from ..models import Document, LineItem
 from ..schemas import DocumentResponse
+from ..config import settings
 from .documents import _to_document_response
 
 router = APIRouter(prefix="/sync", tags=["sync"])
@@ -76,16 +79,33 @@ def sync_vault(
 
     incoming_docs = payload.get("documents", [])
 
+    def _save_b64(b64_str: str, filename: str) -> Optional[str]:
+        if not b64_str or not b64_str.startswith("data:image/"):
+            return None
+        try:
+            raw = b64_str.split(",", 1)[1] if "," in b64_str else b64_str
+            data = base64.b64decode(raw)
+            target = settings.UPLOAD_DIR / filename
+            with open(target, "wb") as f:
+                f.write(data)
+            return str(target.relative_to(settings.BASE_DIR))
+        except Exception as e:
+            print(f"Error saving synced base64 asset: {e}")
+            return None
+
     # 1. Upsert incoming documents into SQLite
     for item in incoming_docs:
         doc_id = item.get("id")
         if not doc_id:
             continue
 
+        thumb_data = item.get("thumbnail_url") or ""
+        file_data = item.get("file_url") or ""
+
         existing = db.query(Document).filter(Document.id == doc_id).first()
         if existing:
             # Update metadata if needed
-            if item.get("merchant_name"):
+            if item.get("merchant_name") and item.get("merchant_name") != "Analyzing receipt with AI...":
                 existing.merchant_name = item.get("merchant_name")
             if item.get("total_amount") is not None:
                 existing.total_amount = float(item.get("total_amount", 0))
@@ -97,6 +117,14 @@ def sync_vault(
                 existing.tags = item.get("tags")
             if not existing.owner_id:
                 existing.owner_id = user_id
+            if not existing.thumbnail_path and thumb_data:
+                saved_thumb = _save_b64(thumb_data, f"{doc_id}_thumb.webp")
+                if saved_thumb:
+                    existing.thumbnail_path = saved_thumb
+            if not existing.storage_path and file_data:
+                saved_file = _save_b64(file_data, f"{doc_id}.jpg")
+                if saved_file:
+                    existing.storage_path = saved_file
             db.commit()
             continue
 
@@ -115,15 +143,18 @@ def sync_vault(
         if match:
             continue
 
+        saved_thumb = _save_b64(thumb_data, f"{doc_id}_thumb.webp") if thumb_data else None
+        saved_file = _save_b64(file_data, f"{doc_id}.jpg") if file_data else None
+
         # Create new document record in database
         new_doc = Document(
             id=doc_id,
             owner_id=user_id,
             filename=item.get("filename") or f"{merch.lower().replace(' ', '_')}.receipt",
-            storage_path="",
+            storage_path=saved_file or "",
             file_size=item.get("file_size") or 1024,
             mime_type=item.get("mime_type") or "image/jpeg",
-            thumbnail_path=None,
+            thumbnail_path=saved_thumb,
             document_type=item.get("document_type") or "Receipt",
             merchant_name=merch,
             merchant_address=item.get("merchant_address"),

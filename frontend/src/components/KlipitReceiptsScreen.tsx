@@ -21,6 +21,18 @@ type DateFilter = 'all' | 'today' | 'yesterday' | 'week' | 'month';
 type AmountFilter = 'all' | 'under1k' | '1k-5k' | 'over5k' | 'custom';
 type StatusFilter = 'all' | 'completed' | 'pending';
 
+function ReceiptAvatar({ url, name }: { url?: string | null; name?: string | null }) {
+  const [hasError, setHasError] = useState(false);
+  if (url && !hasError) {
+    return <img src={url} alt={name || 'Receipt'} onError={() => setHasError(true)} />;
+  }
+  return (
+    <div className="klipit-receipt-avatar-placeholder">
+      <span style={{ fontSize: '1.2rem' }}>🧾</span>
+    </div>
+  );
+}
+
 function parseReceiptDate(dateStr?: string | null, createdStr?: string | null): Date | null {
   if (dateStr) {
     // Check for DD.MM.YYYY
@@ -460,13 +472,7 @@ export const KlipitReceiptsScreen: React.FC<KlipitReceiptsScreenProps> = ({
                 >
                   {/* Circular thumbnail */}
                   <div className="klipit-receipt-avatar">
-                    {rec.thumbnail_url ? (
-                      <img src={rec.thumbnail_url} alt={rec.merchant_name || 'Receipt'} />
-                    ) : (
-                      <div className="klipit-receipt-avatar-placeholder">
-                        <span>📄</span>
-                      </div>
-                    )}
+                    <ReceiptAvatar url={rec.thumbnail_url} name={rec.merchant_name} />
                   </div>
 
                   {/* Info */}

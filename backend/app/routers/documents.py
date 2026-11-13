@@ -221,8 +221,6 @@ def list_documents(
     if x_user_id and x_user_id.strip():
         from .sync import build_user_condition
         query = query.filter(build_user_condition(x_user_id, x_user_name))
-    else:
-        return []
 
     if search:
         s = f"%{search}%"
@@ -325,8 +323,6 @@ def delete_all_documents(
     if x_user_id and x_user_id.strip():
         from .sync import build_user_condition
         query = query.filter(build_user_condition(x_user_id, x_user_name))
-    else:
-        return []
     docs = query.all()
     for doc in docs:
         try:

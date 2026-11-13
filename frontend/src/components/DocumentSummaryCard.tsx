@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { FileText, CheckCircle2, AlertTriangle, Clock, Layers } from 'lucide-react';
 import type { DocumentData } from '../types/document';
 import { api } from '../api/client';
@@ -12,6 +12,7 @@ export const DocumentSummaryCard: React.FC<DocumentSummaryCardProps> = ({
   document,
   onEnlarge,
 }) => {
+  const [thumbError, setThumbError] = useState(false);
   const formatCurrency = (amount: number | null | undefined, currency: string) => {
     if (amount === null || amount === undefined) return 'N/A';
     if (currency === 'INR') {
@@ -64,8 +65,8 @@ export const DocumentSummaryCard: React.FC<DocumentSummaryCardProps> = ({
           onClick={onEnlarge}
           title="Click to view original document"
         >
-          {document.mime_type.startsWith('image/') ? (
-            <img src={thumbUrl} alt="Thumbnail" />
+          {document.mime_type.startsWith('image/') && !thumbError ? (
+            <img src={thumbUrl} alt="Thumbnail" onError={() => setThumbError(true)} />
           ) : (
             <FileText size={28} color="#059669" />
           )}

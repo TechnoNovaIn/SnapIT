@@ -207,28 +207,28 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
               </div>
             </div>
           ) : imageError ? (
-            <div style={{ color: '#94a3b8', textAlign: 'center', padding: '2rem' }}>
-              <FileText size={36} color="#64748b" style={{ margin: '0 auto 8px' }} />
-              <p style={{ fontSize: '0.86rem', marginBottom: '8px' }}>
-                Preview image loading from cloud vault...
+            <div style={{ color: '#94a3b8', textAlign: 'center', padding: '2.5rem 1.5rem', background: '#f8fafc', borderRadius: '12px', border: '1px dashed #cbd5e1' }}>
+              <div style={{ width: '56px', height: '56px', borderRadius: '50%', background: '#ecfdf5', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 12px' }}>
+                <FileText size={28} color="#059669" />
+              </div>
+              <h4 style={{ fontSize: '0.96rem', fontWeight: 700, color: '#1e293b', marginBottom: '4px' }}>
+                {filename || 'Uploaded Receipt Scan'}
+              </h4>
+              <p style={{ fontSize: '0.82rem', color: '#64748b', maxWidth: '340px', margin: '0 auto 14px' }}>
+                Original document was processed and digital receipt data extracted. File image preview is archived in your storage vault.
               </p>
-              {thumbnailUrl && (
-                <img
-                  src={thumbnailUrl}
-                  alt="Thumbnail"
-                  style={{ maxHeight: '180px', borderRadius: '8px', margin: '0 auto 8px' }}
-                />
+              {fileUrl && !fileUrl.startsWith('data:') && (
+                <a
+                  href={fileUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="btn-primary-sm"
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', margin: '0 auto' }}
+                >
+                  <ExternalLink size={14} />
+                  <span>Open Attached Document</span>
+                </a>
               )}
-              <a
-                href={fileUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="btn-primary-sm"
-                style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
-              >
-                <ExternalLink size={14} />
-                <span>Open File Directly</span>
-              </a>
             </div>
           ) : (
             <div
@@ -249,7 +249,14 @@ export const DocumentPreview: React.FC<DocumentPreviewProps> = ({
                 src={fileUrl || thumbnailUrl}
                 alt={filename || 'Uploaded Bill Scan'}
                 className="viewer-img"
-                onError={() => setImageError(true)}
+                onError={() => {
+                  if (fileUrl && thumbnailUrl && fileUrl !== thumbnailUrl) {
+                    // Try thumbnail if main file failed
+                    setImageError(true);
+                  } else {
+                    setImageError(true);
+                  }
+                }}
                 style={{
                   transform: `scale(${zoom}) rotate(${rotation}deg)`,
                   maxWidth: '100%',

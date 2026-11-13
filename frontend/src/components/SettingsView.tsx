@@ -10,11 +10,11 @@ interface SettingsViewProps {
 export const SettingsView: React.FC<SettingsViewProps> = ({ onShowToast }) => {
   const [settings, setSettings] = useState<AppSettings>({
     has_api_key: false,
-    gemini_model: 'gemini-3.8-flash',
+    gemini_model: 'gemini-2.5-flash',
     default_currency: 'INR',
   });
   const [apiKeyInput, setApiKeyInput] = useState('');
-  const [geminiModel, setGeminiModel] = useState('gemini-3.8-flash');
+  const [geminiModel, setGeminiModel] = useState('gemini-2.5-flash');
   const [defaultCurrency, setDefaultCurrency] = useState('INR');
   const [serverUrlInput, setServerUrlInput] = useState(() => api.getCustomBaseUrl());
   const [isSaving, setIsSaving] = useState(false);
@@ -22,7 +22,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onShowToast }) => {
   useEffect(() => {
     api.getSettings().then((res) => {
       setSettings(res);
-      setGeminiModel(res.gemini_model || 'gemini-3.8-flash');
+      setGeminiModel(res.gemini_model || 'gemini-2.5-flash');
       setDefaultCurrency(res.default_currency || 'INR');
       if (res.gemini_api_key) {
         setApiKeyInput(res.gemini_api_key);
@@ -43,6 +43,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onShowToast }) => {
       };
       if (apiKeyInput && !apiKeyInput.includes('...')) {
         payload.gemini_api_key = apiKeyInput.trim();
+        localStorage.setItem('snapit_gemini_api_key', apiKeyInput.trim());
       }
 
       const updated = await api.saveSettings(payload);
@@ -135,9 +136,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onShowToast }) => {
             value={geminiModel}
             onChange={(e) => setGeminiModel(e.target.value)}
           >
-            <option value="gemini-3.8-flash">Gemini 3.8 Flash (Recommended - Latest & Most Accurate)</option>
-            <option value="gemini-flash-latest">Gemini Flash Latest</option>
-            <option value="gemini-3.5-flash">Gemini 3.5 Flash</option>
+            <option value="gemini-2.5-flash">Gemini 2.5 Flash (Recommended - Fastest & Most Accurate)</option>
+            <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
+            <option value="gemini-1.5-flash">Gemini 1.5 Flash</option>
+            <option value="gemini-1.5-pro">Gemini 1.5 Pro (Deep Document Analysis)</option>
           </select>
           <div className="form-help">
             Multimodal models analyze handwriting, printed tables, GST stamps, and receipt typography.

@@ -14,6 +14,18 @@ interface KlipitHomeScreenProps {
   userName?: string;
 }
 
+const ReceiptAvatar: React.FC<{ url?: string | null; name?: string | null }> = ({ url, name }) => {
+  const [hasError, setHasError] = useState(false);
+  if (url && !hasError) {
+    return <img src={url} alt={name || 'Receipt'} onError={() => setHasError(true)} />;
+  }
+  return (
+    <div className="klipit-receipt-avatar-placeholder">
+      <span style={{ fontSize: '1.2rem' }}>🧾</span>
+    </div>
+  );
+};
+
 export const KlipitHomeScreen: React.FC<KlipitHomeScreenProps> = ({
   receipts,
   onOpenReceipt,
@@ -161,13 +173,7 @@ export const KlipitHomeScreen: React.FC<KlipitHomeScreenProps> = ({
               >
                 {/* Circular receipt thumbnail */}
                 <div className="klipit-receipt-avatar">
-                  {rec.thumbnail_url ? (
-                    <img src={rec.thumbnail_url} alt={rec.merchant_name || 'Receipt'} />
-                  ) : (
-                    <div className="klipit-receipt-avatar-placeholder">
-                      <span>📄</span>
-                    </div>
-                  )}
+                  <ReceiptAvatar url={rec.thumbnail_url} name={rec.merchant_name} />
                 </div>
 
                 {/* Details */}

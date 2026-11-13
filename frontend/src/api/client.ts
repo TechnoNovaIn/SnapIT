@@ -64,9 +64,14 @@ export const resolveAssetUrl = (url?: string | null): string => {
   if (url.startsWith('data:') || url.startsWith('blob:') || url.startsWith('http://') || url.startsWith('https://')) {
     return url;
   }
+  const custom = localStorage.getItem('snapit_api_url');
+  if (custom && custom.trim() && url.startsWith('/api')) {
+    const cleanBase = custom.trim().replace(/\/+$/, '').replace(/\/api$/, '');
+    return `${cleanBase}${url}`;
+  }
   if (url.startsWith('/api') && isNativeMobile()) {
-    const base = getBaseUrl();
-    return `${base}${url.replace(/^\/api/, '')}`;
+    const base = getBaseUrl().replace(/\/api$/, '');
+    return `${base}${url}`;
   }
   return url;
 };
@@ -141,8 +146,11 @@ const getAuthHeaders = (): Record<string, string> => {
 
 const pendingFiles = new Map<string, File>();
 
-const GEMINI_API_KEY = 'AQ.Ab8RN6KO8MBveu_5CS-hPYOix3_Q2fZMn-lsU59lFLneSVwUag';
-const GEMINI_MODELS = ['gemini-3.5-flash-lite', 'gemini-3.8-flash', 'gemini-3.5-flash'];
+const GEMINI_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+
+const getStoredGeminiKey = (): string => {
+  return localStorage.getItem('snapit_gemini_api_key')?.trim() || '';
+};
 
 async function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -236,9 +244,19 @@ Analyze the uploaded document image with extreme precision and extract real stru
 
 Return ONLY a valid JSON object matching this schema. Do not include markdown formatting or explanations.`;
 
+    const geminiKey = getStoredGeminiKey();
+    if (!geminiKey || !geminiKey.startsWith('AIzaSy')) {
+      // No client-side Google AI key provided; return fallback so server or user edits handle it
+      return {
+        confidence_score: 0.5,
+        review_status: 'ready_for_review',
+        tags: ['Offline Upload', 'Needs Review'],
+      };
+    }
+
     for (const model of GEMINI_MODELS) {
       try {
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`;
         const payload = {
           contents: [
             {
@@ -419,6 +437,17 @@ export const api = {
             localStorage.setItem('snapit_working_api_url', endpoint);
           }
           const data = await res.json();
+          // Ensure instant local preview is retained even if server thumbnail is loading
+          let localThumb = '';
+          try {
+            localThumb = await generateThumbnailDataUrl(file);
+          } catch {}
+          if (localThumb) {
+            data.thumbnail_url = localThumb;
+            if (!data.file_url || data.file_url.includes('/file')) {
+              data.file_url = localThumb;
+            }
+          }
           // Update local cache
           const local = getLocalDocs();
           local.unshift(data);
@@ -843,8 +872,8 @@ export const api = {
               if (loc) {
                 return {
                   ...srvDoc,
-                  thumbnail_url: (loc.thumbnail_url && !loc.thumbnail_url.startsWith('blob:')) ? loc.thumbnail_url : resolvedThumb,
-                  file_url: (loc.file_url && !loc.file_url.startsWith('blob:')) ? loc.file_url : resolvedFile,
+                  thumbnail_url: loc.thumbnail_url || resolvedThumb,
+                  file_url: loc.file_url || resolvedFile,
                 };
               }
               return {

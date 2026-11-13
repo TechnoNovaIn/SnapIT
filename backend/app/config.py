@@ -26,7 +26,7 @@ class Settings:
     
     # AI / OCR
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
-    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
     DEFAULT_CURRENCY: str = os.getenv("DEFAULT_CURRENCY", "INR")
     
     # File restrictions
