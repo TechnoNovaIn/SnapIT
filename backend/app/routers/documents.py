@@ -153,6 +153,8 @@ async def process_document(
         # Update document fields
         doc.document_type = extraction.get("document_type") or "Receipt"
         doc.merchant_name = extraction.get("merchant_name")
+        if not doc.merchant_name or doc.merchant_name == "Analyzing receipt with AI...":
+            doc.merchant_name = "Handwritten Bill (Needs Review)"
         doc.merchant_address = extraction.get("merchant_address")
         if extraction.get("customer_name"):
             doc.customer_name = extraction.get("customer_name")
@@ -189,7 +191,8 @@ async def process_document(
             db.add(item)
 
         doc.processing_status = "completed"
-        doc.review_status = "needs_review" if doc.uncertain_fields else "ready_for_review"
+        is_uncertain = bool(doc.uncertain_fields) or not doc.total_amount or doc.total_amount == 0.0 or not doc.merchant_name or "Needs Review" in str(doc.merchant_name)
+        doc.review_status = "needs_review" if is_uncertain else "ready_for_review"
         doc.error_message = None
         db.commit()
         db.refresh(doc)

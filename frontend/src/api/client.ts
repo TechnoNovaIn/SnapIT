@@ -26,7 +26,14 @@ export const getCandidateEndpoints = (): string[] => {
   }
 
   if (!isNativeMobile()) {
-    return [custom || '/api'];
+    const list: string[] = [];
+    if (custom) {
+      const normalized = custom.endsWith('/api') ? custom : `${custom}/api`;
+      list.push(normalized);
+    }
+    if (!list.includes('/api')) list.push('/api');
+    if (!list.includes('http://127.0.0.1:8000/api')) list.push('http://127.0.0.1:8000/api');
+    return list;
   }
 
   const list: string[] = [];
@@ -122,7 +129,17 @@ const getLocalDocs = (): DocumentData[] => {
       // Each person has their own private vault starting empty
       return [];
     }
-    return JSON.parse(raw);
+    const parsed: DocumentData[] = JSON.parse(raw);
+    return parsed.map((doc): DocumentData => {
+      if (doc.merchant_name && doc.merchant_name.includes('Analyzing receipt with AI')) {
+        return {
+          ...doc,
+          merchant_name: 'Handwritten Bill (Needs Review)',
+          review_status: 'needs_review' as const,
+        };
+      }
+      return doc;
+    });
   } catch {
     return [];
   }
@@ -246,11 +263,25 @@ Return ONLY a valid JSON object matching this schema. Do not include markdown fo
 
     const geminiKey = getStoredGeminiKey();
     if (!geminiKey || !geminiKey.startsWith('AIzaSy')) {
-      // No client-side Google AI key provided; return fallback so server or user edits handle it
+      // No client-side Google AI key provided; return fallback so user review handles it
       return {
+        merchant_name: 'Handwritten Bill (Needs Review)',
+        document_type: 'Receipt',
+        total_amount: 0.0,
+        subtotal: 0.0,
         confidence_score: 0.5,
-        review_status: 'ready_for_review',
-        tags: ['Offline Upload', 'Needs Review'],
+        review_status: 'needs_review',
+        tags: ['Handwritten Bill', 'Needs Review'],
+        line_items: [
+          {
+            description: 'Handwritten item (Tap Edit Details to update)',
+            category: 'Purchase',
+            quantity: 1,
+            unit_price: 0.0,
+            tax_amount: 0.0,
+            total: 0.0,
+          },
+        ],
       };
     }
 
@@ -477,7 +508,7 @@ export const api = {
       file_url: previewUrl,
       thumbnail_url: previewUrl,
       document_type: 'Receipt',
-      merchant_name: 'Analyzing receipt with AI...',
+      merchant_name: 'Handwritten Bill (Scanning...)',
       customer_name: getCurrentUserName(),
       invoice_number: `INV-${Math.floor(100000 + Math.random() * 900000)}`,
       invoice_date: new Date().toISOString().split('T')[0],
@@ -487,11 +518,11 @@ export const api = {
       tax_amount: 0.0,
       total_amount: 0.0,
       payment_status: 'PAID',
-      review_status: 'ready_for_review',
+      review_status: 'needs_review',
       processing_status: 'pending',
       confidence_score: 0.5,
       tags: ['Mobile Upload', 'AI Scanning'],
-      uncertain_fields: [],
+      uncertain_fields: ['merchant_name', 'total_amount', 'line_items'],
       line_items: [],
       share_token: `share-${id}`,
       created_at: new Date().toISOString(),
@@ -616,7 +647,11 @@ export const api = {
       }
 
       const extracted = await extractWithGeminiVision(pendingFile);
-      if (extracted.merchant_name) doc.merchant_name = extracted.merchant_name;
+      if (extracted.merchant_name && !extracted.merchant_name.includes('Analyzing') && !extracted.merchant_name.includes('Scanning')) {
+        doc.merchant_name = extracted.merchant_name;
+      } else if (!doc.merchant_name || doc.merchant_name.includes('Analyzing') || doc.merchant_name.includes('Scanning')) {
+        doc.merchant_name = 'Handwritten Bill (Needs Review)';
+      }
       if (extracted.merchant_address) doc.merchant_address = extracted.merchant_address;
       if (extracted.invoice_number) doc.invoice_number = extracted.invoice_number;
       if (extracted.invoice_date) doc.invoice_date = extracted.invoice_date;
@@ -629,7 +664,7 @@ export const api = {
       if (Array.isArray(extracted.tags) && extracted.tags.length > 0) doc.tags = extracted.tags;
       if (Array.isArray(extracted.line_items) && extracted.line_items.length > 0) doc.line_items = extracted.line_items;
       if (typeof extracted.confidence_score === 'number') doc.confidence_score = extracted.confidence_score;
-      if (extracted.review_status) doc.review_status = extracted.review_status;
+      doc.review_status = extracted.review_status || (doc.total_amount === 0 ? 'needs_review' : 'ready_for_review');
 
       doc.processing_status = 'completed';
       doc.customer_name = getCurrentUserName();
@@ -641,6 +676,12 @@ export const api = {
       return doc;
     }
 
+    if (!doc.merchant_name || doc.merchant_name.includes('Analyzing') || doc.merchant_name.includes('Scanning')) {
+      doc.merchant_name = 'Handwritten Bill (Needs Review)';
+    }
+    if (doc.total_amount === 0) {
+      doc.review_status = 'needs_review';
+    }
     doc.processing_status = 'completed';
     saveLocalDocs(local);
     this.syncVaultWithServer().catch(() => {});
@@ -883,10 +924,13 @@ export const api = {
               };
             });
 
-            // Clean out any stale un-extracted offline docs
-            const cleanMerged = merged.filter(
-              (d) => !(d.merchant_name === 'Analyzing receipt with AI...' && d.total_amount === 0)
-            );
+            // Clean out or heal any stale placeholder docs
+            const cleanMerged: DocumentData[] = merged.map((d) => {
+              if (d.merchant_name && d.merchant_name.includes('Analyzing receipt with AI')) {
+                return { ...d, merchant_name: 'Handwritten Bill (Needs Review)', review_status: 'needs_review' as const };
+              }
+              return d;
+            });
 
             saveLocalDocs(cleanMerged);
             return { count: cleanMerged.length, synced: true, documents: cleanMerged };
@@ -907,9 +951,7 @@ export const api = {
       await this.syncVaultWithServer();
     } catch {}
 
-    let items = getLocalDocs().filter(
-      (d) => !(d.merchant_name === 'Analyzing receipt with AI...' && d.total_amount === 0)
-    );
+    let items = getLocalDocs();
     if (search && search.trim()) {
       const q = search.toLowerCase();
       items = items.filter(

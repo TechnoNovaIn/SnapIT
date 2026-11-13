@@ -200,7 +200,7 @@ export const KlipitReceiptDetailsScreen: React.FC<KlipitReceiptDetailsScreenProp
               </div>
 
               <div className="klipit-summary-merchant">
-                Merchant: {doc.merchant_name || 'Store Receipt'}
+                Merchant: {doc.merchant_name && !doc.merchant_name.includes('Analyzing') ? doc.merchant_name : 'Handwritten Bill (Needs Review)'}
               </div>
 
               <div className="klipit-summary-meta">
@@ -260,6 +260,51 @@ export const KlipitReceiptDetailsScreen: React.FC<KlipitReceiptDetailsScreenProp
             />
           </div>
 
+          {/* Review Required Banner for Handwritten or Incomplete Bills */}
+          {(doc.review_status === 'needs_review' || !doc.total_amount || doc.total_amount === 0) && (
+            <div
+              style={{
+                background: '#fffbeb',
+                border: '1px solid #fde68a',
+                borderRadius: '12px',
+                padding: '0.85rem 1rem',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '0.75rem',
+                marginBottom: '0.75rem',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                <span style={{ fontSize: '1.25rem' }}>✍️</span>
+                <div>
+                  <div style={{ fontWeight: 700, fontSize: '0.85rem', color: '#92400e' }}>
+                    Review Required
+                  </div>
+                  <div style={{ fontSize: '0.75rem', color: '#b45309' }}>
+                    Handwritten text detected. Tap Edit Details to confirm amounts.
+                  </div>
+                </div>
+              </div>
+              <button
+                onClick={onEdit}
+                style={{
+                  background: '#f59e0b',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: '8px',
+                  padding: '0.4rem 0.75rem',
+                  fontSize: '0.75rem',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                Edit Details
+              </button>
+            </div>
+          )}
+
           {/* Card 3: Authentic Sawtooth Jagged Paper Receipt Card */}
           <div className="klipit-paper-receipt-container">
             {/* ZigZag Perforated Top Border */}
@@ -268,7 +313,7 @@ export const KlipitReceiptDetailsScreen: React.FC<KlipitReceiptDetailsScreenProp
             <div className="klipit-paper-receipt-body">
               {/* Merchant Title */}
               <div className="klipit-paper-merchant">
-                {doc.merchant_name || 'Receipt Purchase'}
+                {doc.merchant_name && !doc.merchant_name.includes('Analyzing') ? doc.merchant_name : 'Handwritten Bill (Needs Review)'}
               </div>
 
               {/* Date, Invoice No, Total Items */}

@@ -179,7 +179,7 @@ export const KlipitHomeScreen: React.FC<KlipitHomeScreenProps> = ({
                 {/* Details */}
                 <div className="klipit-receipt-info">
                   <div className="klipit-receipt-merchant">
-                    {rec.merchant_name || 'Sri Siddeshwara Medi...'}
+                    {rec.merchant_name && !rec.merchant_name.includes('Analyzing') ? rec.merchant_name : 'Handwritten Bill'}
                   </div>
                   <div className="klipit-receipt-date">
                     {rec.invoice_date || '24 Oct 2026'}

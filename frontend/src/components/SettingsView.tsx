@@ -125,7 +125,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onShowToast }) => {
             placeholder="AIzaSy..."
           />
           <div className="form-help">
-            Your key is stored securely in server-side environment/database and never exposed to public links.
+            Enter your Google AI Studio API key (starts with <code>AIzaSy...</code>). Keys starting with <code>AQ.</code> are OAuth tokens and cannot be used here.
           </div>
         </div>
 

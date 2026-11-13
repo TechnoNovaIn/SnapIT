@@ -2,7 +2,7 @@ import os
 import json
 import re
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Union
 import pypdf
 
 from ..config import settings
@@ -79,11 +79,12 @@ class OCRService:
         return os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
     @classmethod
-    def extract_document(cls, file_path: Path, mime_type: str) -> Dict[str, Any]:
+    def extract_document(cls, file_path: Union[str, Path], mime_type: str) -> Dict[str, Any]:
         """
         Main extraction entry point.
         Attempts Gemini Vision API if key configured; otherwise uses intelligent local OCR / text extraction.
         """
+        file_path = Path(file_path)
         api_key = cls.get_configured_api_key()
         model_name = cls.get_configured_model()
 
@@ -194,18 +195,52 @@ class OCRService:
     @staticmethod
     def _run_image_ocr(image) -> str:
         """
-        Runs Windows native OCR via winocr synchronously.
+        Runs Windows native OCR via winocr safely in a dedicated worker thread,
+        with multi-pass contrast and sharpness preprocessing to maximize text extraction.
         """
         try:
             import winocr
             import asyncio
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                result = loop.run_until_complete(winocr.recognize_pil(image, "en"))
-                return result.text if result else ""
-            finally:
-                loop.close()
+            import concurrent.futures
+            from PIL import Image, ImageEnhance, ImageOps, ImageFilter
+
+            def run_ocr_for_img(img_pil: Image.Image) -> str:
+                def worker():
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        res = loop.run_until_complete(winocr.recognize_pil(img_pil, "en"))
+                        return res.text if res else ""
+                    finally:
+                        loop.close()
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    return pool.submit(worker).result()
+
+            # Ensure image is RGB
+            if image.mode != "RGB":
+                image = image.convert("RGB")
+
+            # Candidate 1: Raw image (upscaled if small)
+            w, h = image.size
+            base_img = image
+            if w < 1200:
+                scale = 1200 / max(w, 1)
+                base_img = image.resize((1200, int(h * scale)), Image.Resampling.LANCZOS)
+
+            # Pass 1: Base image
+            best_text = run_ocr_for_img(base_img)
+
+            # Pass 2: Enhanced grayscale (contrast + sharpness)
+            # Essential for low-contrast phone photos and blue ink
+            gray = ImageOps.grayscale(base_img)
+            enhanced = ImageEnhance.Contrast(gray).enhance(2.2)
+            enhanced = ImageEnhance.Sharpness(enhanced).enhance(2.0).convert("RGB")
+            enhanced_text = run_ocr_for_img(enhanced)
+
+            if len(enhanced_text.strip()) > len(best_text.strip()):
+                best_text = enhanced_text
+
+            return best_text.strip()
         except Exception as e:
             print(f"winocr execution note: {e}")
             return ""
@@ -269,28 +304,45 @@ class OCRService:
             ]
             return any(w in c for w in address_words)
 
+        # Step 2A: Direct detection of commercial name with business suffix at start of document
+        # Handles continuous single-line OCR streams produced by desktop WinOCR
+        spaced_text = re.sub(r'([A-Za-z]{3,})(MARKETING|ENTERPRISES|AGENCIES|TRADERS|PHARMACY|STORES|STORE|MEDICAL|SERVICES|HOSPITAL|CLINIC|BAZAAR|MOTORS)\b', r'\1 \2', text, flags=re.I)
+        biz_suffix_pattern = r'^\s*([A-Za-z0-9\s&().,\'-]{2,50}?(?:ENTERPRISES|LOGISTICS|TRANSPORT|MARKETING|AGENCIES|SERVICES|HOSPITAL|PHARMACY|STORES|STORE|MEDICAL|CLINIC|BAZAAR|TRADERS|PVT\s*LTD|COMPANY|MOTORS|MART|LTD|CO\b)(?:\s+(?:STORES|STORE|AGENCY|AGENCIES|SERVICES|LTD|PVT\s*LTD))?)\b'
+        biz_match = re.search(biz_suffix_pattern, spaced_text, re.I)
+        if biz_match:
+            cand = biz_match.group(1).strip()
+            if not is_phone_or_contact(cand) and not is_tax_or_header(cand):
+                merchant_name = cand
+
         valid_merchant_candidates = []
         for line in lines[:8]:
             if is_phone_or_contact(line) or is_tax_or_header(line):
                 continue
-            if is_address_text(line):
+
+            # Strip off trailing address / bill / date metadata that might be merged on the same line
+            clean_cand = re.split(r'\s+(?:station\b|road\b|street\b|nagar\b|opp\b|near\b|behind\b|ph\b|mob\b|date\b|cete\b|bill\b|inv\b|gstin\b|\d{5,6})', line, flags=re.I)[0].strip()
+            
+            # Separate concatenated business keywords e.g. NAVARATHNAMARKETING -> NAVARATHNA MARKETING
+            clean_cand = re.sub(r'([A-Za-z]{3,})(MARKETING|ENTERPRISES|AGENCIES|TRADERS|PHARMACY|STORES|STORE|MEDICAL|SERVICES|HOSPITAL|CLINIC|BAZAAR)\b', r'\1 \2', clean_cand, flags=re.I)
+            
+            if is_address_text(clean_cand):
                 if not merchant_address:
                     merchant_address = line
                 continue
             
-            letters = re.findall(r'[A-Za-z]', line)
-            if len(letters) < 3 or len(line) > 80:
+            letters = re.findall(r'[A-Za-z]', clean_cand)
+            if len(letters) < 3 or len(clean_cand) > 60:
                 continue
             
-            digits = re.findall(r'\d', line)
-            if len(digits) / len(line) > 0.30:
+            digits = re.findall(r'\d', clean_cand)
+            if len(digits) / len(clean_cand) > 0.30:
                 continue
             
-            valid_merchant_candidates.append(line)
+            valid_merchant_candidates.append(clean_cand)
 
         if valid_merchant_candidates:
             biz_keywords = [
-                "medical", "store", "stores", "general", "pharmacy", "hospital", "clinic",
+                "marketing", "medical", "store", "stores", "general", "pharmacy", "hospital", "clinic",
                 "hotel", "restaurant", "bazaar", "mart", "supermarket", "enterprise",
                 "enterprises", "traders", "agency", "agencies", "transport", "logistics",
                 "motors", "services", "ltd", "pvt", "co.", "company", "cafe", "bakers"
@@ -307,6 +359,7 @@ class OCRService:
             m = re.search(r'^\s*([A-Za-z0-9\s&().,\'-]{3,60}?)(?=\s+(?:station\s*road|road|street|nagar|gstin|phone|mob|cell|bill\s*no|tax\s*invoice|date)\b)', text, re.I)
             if m:
                 cand = m.group(1).strip()
+                cand = re.sub(r'([A-Za-z]{3,})(MARKETING|ENTERPRISES|AGENCIES|TRADERS|PHARMACY|STORES|STORE|MEDICAL|SERVICES|HOSPITAL|CLINIC|BAZAAR)\b', r'\1 \2', cand, flags=re.I)
                 if not is_phone_or_contact(cand) and not is_tax_or_header(cand) and not is_address_text(cand):
                     merchant_name = cand
 
@@ -317,15 +370,26 @@ class OCRService:
                     break
 
         if not merchant_name:
+            # Check if filename contains meaningful words
+            clean_fn = re.sub(r'^(?:whatsapp[_\s-]*image[_\s-]*|img[_\s-]*|scan[_\s-]*|photo[_\s-]*|doc[_\s-]*)', '', filename, flags=re.I)
+            clean_fn = re.sub(r'[\d_-]+', ' ', clean_fn).strip()
+            if len(clean_fn) >= 3 and not re.match(r'^(?:jpg|jpeg|png|pdf|webp)$', clean_fn, re.I):
+                merchant_name = clean_fn.title()
+            else:
+                merchant_name = "Handwritten Bill (Needs Review)"
             uncertain_fields.append("merchant_name")
 
         # 3. Invoice Number
         invoice_number = None
-        inv_match = re.search(r'(?:invoice|inv|bill|receipt|po|tax invoice|ref)\s*(?:no|number|#)?[:.\s-]*([A-Za-z0-9\/-]+)', text, re.IGNORECASE)
+        inv_match = re.search(r'\b(?:invoice|inv|bill|gill|receipt|po|tax\s*invoice|ref|b\.?\s*no|memo\s*no)\s*(?:no|number|#)?[:.\s-]*([A-Za-z0-9\/-]+)', text, re.IGNORECASE)
         if inv_match:
             invoice_number = inv_match.group(1).strip()
         else:
-            uncertain_fields.append("invoice_number")
+            inv_fallback = re.search(r'\b(?:no|#)[:.\s-]*([0-9]{3,8})\b', text, re.IGNORECASE)
+            if inv_fallback:
+                invoice_number = inv_fallback.group(1).strip()
+            else:
+                uncertain_fields.append("invoice_number")
 
         # 4. Dates
         invoice_date = None
@@ -350,14 +414,14 @@ class OCRService:
         subtotal = None
         tax_amount = None
 
-        # Level A: High-confidence labeled totals
-        high_conf_pattern = re.findall(
-            r'(?:grand\s*total|net\s*payable|amount\s*payable|net\s*amount|total\s*amount|bill\s*amount|final\s*amount|balance\s*due)\s*[:.\s-]*(?:inr|rs\.?|₹|\$|€|£)?\s*([\d,]+(?:\.\d{1,2})?)\s*(?:\/-)?',
+        # Level A: High-confidence Grand Totals / Final Payable
+        grand_pattern = re.findall(
+            r'(?:grand(?:\s*tota[lt])?|final\s*amount|net\s*payable|amount\s*payable|balance\s*due)\s*[:.\s-]*(?:inr|rs\.?|₹|\$|€|£)?\s*([\d,]+(?:\.\d{1,2})?)\s*(?:\/-)?',
             cleaned_text,
             re.I
         )
-        if high_conf_pattern:
-            for val in reversed(high_conf_pattern):
+        if grand_pattern:
+            for val in reversed(grand_pattern):
                 try:
                     num = float(val.replace(',', ''))
                     if num > 0:
@@ -366,7 +430,24 @@ class OCRService:
                 except ValueError:
                     pass
 
-        # Level B: Explicit currency amount (e.g. INR 3100.00 or Rs. 550/-)
+        # Level B: General Total amounts
+        if total_amount is None:
+            high_conf_pattern = re.findall(
+                r'(?:tota[lt](?:\s*amount)?|net\s*amount|bill\s*amount)\s*[:.\s-]*(?:inr|rs\.?|₹|\$|€|£)?\s*([\d,]+(?:\.\d{1,2})?)\s*(?:\/-)?',
+                cleaned_text,
+                re.I
+            )
+            if high_conf_pattern:
+                for val in reversed(high_conf_pattern):
+                    try:
+                        num = float(val.replace(',', ''))
+                        if num > 0:
+                            total_amount = num
+                            break
+                    except ValueError:
+                        pass
+
+        # Level C: Explicit currency amount (e.g. INR 3100.00 or Rs. 550/-)
         if total_amount is None:
             currency_matches = re.findall(r'(?:inr|rs\.?|₹)\s*([\d,]+(?:\.\d{1,2})?)\s*(?:\/-)?', cleaned_text, re.I)
             if currency_matches:
@@ -381,10 +462,10 @@ class OCRService:
                 if valid_nums:
                     total_amount = valid_nums[-1]
 
-        # Level C: Generic Total / Amt / Amount
+        # Level D: Generic Total / Amt / Amount / Grand
         if total_amount is None:
             total_matches = re.findall(
-                r'\b(?:total|amount|amt|paid)\s*[:.\s-]*(?:inr|rs\.?|₹|\$|€|£)?\s*([\d,]+(?:\.\d{1,2})?)\s*(?:\/-)?',
+                r'\b(?:tota[lt]|grand|amount|amt|paid)\s*[:.\s-]*(?:inr|rs\.?|₹|\$|€|£)?\s*([\d,]+(?:\.\d{1,2})?)\s*(?:\/-)?',
                 cleaned_text,
                 re.I
             )
@@ -460,6 +541,15 @@ class OCRService:
                 "is_suggested_category": True
             })
         elif not line_items:
+            line_items.append({
+                "description": f"{merchant_name or 'Handwritten'} Item (Tap to Edit)",
+                "category": "Purchase",
+                "quantity": 1.0,
+                "unit_price": total_amount or 0.0,
+                "tax_amount": 0.0,
+                "total": total_amount or 0.0,
+                "is_suggested_category": True
+            })
             uncertain_fields.append("line_items")
 
         # Document Type classification
@@ -482,9 +572,12 @@ class OCRService:
         if merchant_name:
             tags.append(merchant_name[:20].strip())
 
+        has_uncertainties = bool(uncertain_fields) or not total_amount or total_amount == 0.0 or not merchant_name or "Needs Review" in str(merchant_name)
+        confidence = 0.55 if has_uncertainties else 0.88
+
         return {
             "document_type": doc_type,
-            "merchant_name": merchant_name,
+            "merchant_name": merchant_name or "Handwritten Bill (Needs Review)",
             "merchant_address": merchant_address,
             "customer_name": None,
             "invoice_number": invoice_number,
@@ -497,7 +590,7 @@ class OCRService:
             "tax_amount": tax_amount or 0.0,
             "total_amount": total_amount or 0.0,
             "payment_status": "Paid" if "paid" in text_lower else "Pending",
-            "confidence_score": 0.85 if total_amount and merchant_name else 0.50,
+            "confidence_score": confidence,
             "tags": tags,
             "uncertain_fields": uncertain_fields,
             "line_items": line_items

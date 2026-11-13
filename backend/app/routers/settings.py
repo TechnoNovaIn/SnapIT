@@ -22,7 +22,7 @@ def get_settings(db: Session = Depends(get_db)):
         gemini_api_key=masked_key,
         gemini_model=db_model.value if db_model and db_model.value else settings.GEMINI_MODEL,
         default_currency=db_curr.value if db_curr and db_curr.value else settings.DEFAULT_CURRENCY,
-        has_api_key=bool(raw_key)
+        has_api_key=bool(raw_key and raw_key.startswith("AIzaSy"))
     )
 
 @router.post("", response_model=SettingsSchema)
