@@ -87,11 +87,11 @@ export const AccountModal: React.FC<AccountModalProps> = ({
                     <span className="account-user-name">{user.name}</span>
                     <span className="account-verified-badge">
                       <ShieldCheck size={14} color="#16a34a" />
-                      <span>Verified</span>
+                      <span>Local account</span>
                     </span>
                   </div>
                   <div className="account-user-phone">
-                    {user.email || user.phoneNumber || user.identifier || '+91 98765 43210'}
+                    {user.email || user.phoneNumber || user.identifier || 'No contact details'}
                   </div>
                 </div>
                 {!isEditing && (
@@ -99,7 +99,7 @@ export const AccountModal: React.FC<AccountModalProps> = ({
                     className="account-edit-trigger"
                     onClick={() => {
                       setNameInput(user.name);
-                      setPhoneInput(user.phoneNumber || '+91 98765 43210');
+                      setPhoneInput(user.phoneNumber || '');
                       setEmailInput(user.email || '');
                       setIsEditing(true);
                     }}
@@ -203,7 +203,7 @@ export const AccountModal: React.FC<AccountModalProps> = ({
                       <span>Sign-In Method</span>
                     </div>
                     <div className="account-detail-value text-green" style={{ fontWeight: 700 }}>
-                      {user.provider === 'google' ? 'GOOGLE SSO' : (user.provider ? `${user.provider.toUpperCase()} SSO` : 'UNIVERSAL ID')}
+                      {user.provider === 'email' ? 'EMAIL' : user.provider === 'phone' ? 'MOBILE NUMBER' : 'NAME ONLY'}
                     </div>
                   </div>
                 </div>

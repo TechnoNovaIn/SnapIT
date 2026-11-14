@@ -5,6 +5,8 @@ export type ProcessingStep = 'uploading' | 'reading' | 'extracting' | 'validatin
 
 interface ProcessingModalProps {
   currentStep: ProcessingStep;
+  /** The step that was running when processing failed, so earlier steps are shown as done. */
+  failedAtStep?: ProcessingStep | null;
   errorMessage?: string | null;
   file?: File | null;
   onRetry: () => void;
@@ -21,31 +23,35 @@ const STEPS = [
 
 export const ProcessingModal: React.FC<ProcessingModalProps> = ({
   currentStep,
+  failedAtStep,
   errorMessage,
   file,
   onRetry,
   onCancel,
 }) => {
-  const [thumb, setThumb] = React.useState<string | null>(null);
-
-  React.useEffect(() => {
-    if (file && (file.type.startsWith('image/') || file.name.match(/\.(jpg|jpeg|png|webp)$/i))) {
-      try {
-        const url = URL.createObjectURL(file);
-        setThumb(url);
-        return () => URL.revokeObjectURL(url);
-      } catch {}
-    } else {
-      setThumb(null);
+  const isImage = !!file && (file.type.startsWith('image/') || /\.(jpg|jpeg|png|webp)$/i.test(file.name));
+  const thumb = React.useMemo(() => {
+    if (!isImage || !file) return null;
+    try {
+      return URL.createObjectURL(file);
+    } catch {
+      return null;
     }
-  }, [file]);
+  }, [file, isImage]);
+  React.useEffect(() => {
+    return () => {
+      if (thumb) URL.revokeObjectURL(thumb);
+    };
+  }, [thumb]);
+
   const getStepStatus = (stepKey: string) => {
     const order = ['uploading', 'reading', 'extracting', 'validating', 'completed'];
     const currentIndex = order.indexOf(currentStep);
     const stepIndex = order.indexOf(stepKey);
 
     if (currentStep === 'failed') {
-      return stepIndex <= 2 ? 'completed' : 'pending';
+      const failedIndex = failedAtStep ? order.indexOf(failedAtStep) : 0;
+      return stepIndex < failedIndex ? 'completed' : 'pending';
     }
     if (stepIndex < currentIndex) return 'completed';
     if (stepIndex === currentIndex) return 'active';
@@ -68,7 +74,7 @@ export const ProcessingModal: React.FC<ProcessingModalProps> = ({
 
         <p style={{ color: '#64748b', fontSize: '0.9rem', marginTop: '0.25rem' }}>
           {currentStep === 'failed'
-            ? 'An error occurred during AI extraction'
+            ? `Processing stopped while ${failedAtStep && failedAtStep !== 'failed' ? failedAtStep : 'uploading'} the document`
             : 'Applying vision & OCR models to structure invoice fields...'}
         </p>
 

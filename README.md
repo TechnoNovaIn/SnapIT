@@ -64,8 +64,8 @@ Displays visual real-time progress through all stages:
 - **Frontend**: React 18, TypeScript, Vite, Vanilla CSS design system (Inter font, emerald green accents, white cards), Lucide Icons.
 - **Backend**: Python 3, FastAPI, Uvicorn, Pydantic v2, SQLAlchemy.
 - **Database**: SQLite (default, zero configuration needed) or PostgreSQL (via `DATABASE_URL`).
-- **AI / OCR**: `google-genai` SDK + PyPDF + Pillow.
-- **Exporting**: ReportLab (PDF), Python standard CSV & JSON.
+- **AI / OCR**: `google-genai` SDK (Gemini vision, when a key is configured) with a local fallback: `pypdf` for digital PDFs, `pypdfium2` to render scans, Windows OCR (`winocr`) or Tesseract (`pytesseract`, Docker image) for images, plus rule-based field parsing. Fields that cannot be read are returned as empty and flagged for review; nothing is invented.
+- **Exporting**: ReportLab (PDF), openpyxl (Excel), Python standard CSV & JSON.
 
 ---
 
@@ -110,10 +110,23 @@ Visit `http://localhost:8000` in any browser.
 ---
 
 ## 📱 Android App Deployment
-The Android APK is compiled and ready at `SnapIT.apk`:
-- Built with Capacitor 8 and Android SDK 35.
-- Connects automatically via Cloud Tunnel or LAN Wi-Fi with automatic fallback.
-- Configurable cloud endpoints via **Settings -> Cloud API Endpoint**.
+The Android app is built with Capacitor 8 (`cd frontend && npm run build && npx cap sync android`, then build in Android Studio).
+- The phone needs to know where your SnapIT server is: open **Settings -> Backend API URL** and enter either the
+  LAN address printed by `run.py` (same Wi-Fi) or the Cloudflare quick-tunnel URL it prints (mobile data).
+- Nothing is hardcoded in the app: tunnel hostnames change every run, so the URL is always configured in Settings.
+- Receipts captured while offline are kept on the device and pushed to the server on the next sync.
+- A previously built `SnapIT.apk` is checked in for convenience; it predates the current fixes and should be rebuilt.
+
+---
+
+## 🔐 Security Notes (read before exposing the server)
+- **There is no authentication.** Users are identified by the `X-User-Id` header the app sends, which any client can set.
+  Documents are scoped to that identifier on every endpoint, but this is isolation between well-behaved clients, not access control.
+  Keep the server on a private network, behind a tunnel you control, or put an authenticating proxy in front of it.
+- `backend/.env` is git-ignored. If a key was ever committed, rotate it in Google AI Studio: removing a file from git does not remove it from history.
+- The Gemini key is stored on the server (database or `.env`) and only ever returned masked. The Android app optionally keeps a copy on the device for offline reading.
+- Restrict `CORS_ORIGINS` in `backend/.env` when the API is reachable from the internet.
+- Share links grant read-only access to anyone holding the token; use `POST /api/documents/{id}/share/rotate` to revoke a link.
 
 
 ### 1. Prerequisites
@@ -172,10 +185,16 @@ Open your browser at:
 
 ## 🧪 Running Backend Unit Tests
 
-Run the test suite covering file upload, processing, editing, saving, and export endpoints:
+Run the test suite covering validation, upload, processing, editing, exports, sharing, sync and per-user scoping:
 ```bash
 cd backend
 python -m pytest tests/
+```
+Tests run against a temporary database and uploads folder (see `tests/conftest.py`), never against `smartbill.db`, and never call Gemini.
+
+Frontend checks:
+```bash
+cd frontend && npx tsc -p tsconfig.app.json --noEmit && npx oxlint src
 ```
 
 ---

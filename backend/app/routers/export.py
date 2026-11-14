@@ -1,55 +1,85 @@
-from fastapi import APIRouter, Depends, HTTPException, Response
+import re
+from typing import Optional
+
+from fastapi import APIRouter, Depends, Header, Query, Response
 from sqlalchemy.orm import Session
+
 from ..database import get_db
-from ..models import Document
 from ..services.export_service import ExportService
+from ._common import get_accessible_document
 
 router = APIRouter(prefix="/documents", tags=["export"])
 
+
+def _attachment(name: str) -> dict:
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", name)
+    return {"Content-Disposition": f'attachment; filename="{safe}"'}
+
+
+def _basename(doc) -> str:
+    merchant = re.sub(r"[^A-Za-z0-9]+", "_", (doc.merchant_name or "receipt")).strip("_")[:40] or "receipt"
+    return f"snapit_{merchant}_{doc.id[:8]}"
+
+
 @router.get("/{doc_id}/export/json")
-def export_json(doc_id: str, db: Session = Depends(get_db)):
-    doc = db.query(Document).filter(Document.id == doc_id).first()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
-    json_data = ExportService.export_json(doc)
+def export_json(
+    doc_id: str,
+    x_user_id: Optional[str] = Header(None, alias="X-User-Id"),
+    x_user_name: Optional[str] = Header(None, alias="X-User-Name"),
+    user_id: Optional[str] = Query(None, max_length=255),
+    db: Session = Depends(get_db)
+):
+    doc = get_accessible_document(db, doc_id, x_user_id, x_user_name, query_user_id=user_id)
     return Response(
-        content=json_data,
+        content=ExportService.export_json(doc),
         media_type="application/json",
-        headers={"Content-Disposition": f'attachment; filename="smartbill_{doc_id[:8]}.json"'}
+        headers=_attachment(f"{_basename(doc)}.json")
     )
+
 
 @router.get("/{doc_id}/export/csv")
-def export_csv(doc_id: str, db: Session = Depends(get_db)):
-    doc = db.query(Document).filter(Document.id == doc_id).first()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
-    csv_data = ExportService.export_csv(doc)
+def export_csv(
+    doc_id: str,
+    x_user_id: Optional[str] = Header(None, alias="X-User-Id"),
+    x_user_name: Optional[str] = Header(None, alias="X-User-Name"),
+    user_id: Optional[str] = Query(None, max_length=255),
+    db: Session = Depends(get_db)
+):
+    doc = get_accessible_document(db, doc_id, x_user_id, x_user_name, query_user_id=user_id)
     return Response(
-        content=csv_data,
-        media_type="text/csv",
-        headers={"Content-Disposition": f'attachment; filename="smartbill_{doc_id[:8]}.csv"'}
+        content=ExportService.export_csv(doc).encode("utf-8"),
+        media_type="text/csv; charset=utf-8",
+        headers=_attachment(f"{_basename(doc)}.csv")
     )
+
 
 @router.get("/{doc_id}/export/excel")
-def export_excel(doc_id: str, db: Session = Depends(get_db)):
-    doc = db.query(Document).filter(Document.id == doc_id).first()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
-    excel_bytes = ExportService.export_excel(doc)
+def export_excel(
+    doc_id: str,
+    x_user_id: Optional[str] = Header(None, alias="X-User-Id"),
+    x_user_name: Optional[str] = Header(None, alias="X-User-Name"),
+    user_id: Optional[str] = Query(None, max_length=255),
+    db: Session = Depends(get_db)
+):
+    doc = get_accessible_document(db, doc_id, x_user_id, x_user_name, query_user_id=user_id)
     return Response(
-        content=excel_bytes,
+        content=ExportService.export_excel(doc),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="smartbill_{doc_id[:8]}.xlsx"'}
+        headers=_attachment(f"{_basename(doc)}.xlsx")
     )
 
+
 @router.get("/{doc_id}/export/pdf")
-def export_pdf_summary(doc_id: str, db: Session = Depends(get_db)):
-    doc = db.query(Document).filter(Document.id == doc_id).first()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
-    pdf_bytes = ExportService.export_pdf_summary(doc)
+def export_pdf_summary(
+    doc_id: str,
+    x_user_id: Optional[str] = Header(None, alias="X-User-Id"),
+    x_user_name: Optional[str] = Header(None, alias="X-User-Name"),
+    user_id: Optional[str] = Query(None, max_length=255),
+    db: Session = Depends(get_db)
+):
+    doc = get_accessible_document(db, doc_id, x_user_id, x_user_name, query_user_id=user_id)
     return Response(
-        content=pdf_bytes,
+        content=ExportService.export_pdf_summary(doc),
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="smartbill_summary_{doc_id[:8]}.pdf"'}
+        headers=_attachment(f"{_basename(doc)}_summary.pdf")
     )

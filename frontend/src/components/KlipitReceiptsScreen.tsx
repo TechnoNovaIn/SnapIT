@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import type { DocumentListItem } from '../types/document';
+import { displayMerchant, formatMoney, formatReceiptDate, parseReceiptDate } from '../utils/format';
 import {
   Share2,
   Search,
@@ -31,28 +32,6 @@ function ReceiptAvatar({ url, name }: { url?: string | null; name?: string | nul
       <span style={{ fontSize: '1.2rem' }}>🧾</span>
     </div>
   );
-}
-
-function parseReceiptDate(dateStr?: string | null, createdStr?: string | null): Date | null {
-  if (dateStr) {
-    // Check for DD.MM.YYYY
-    const ddmmyyyy = dateStr.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
-    if (ddmmyyyy) {
-      return new Date(parseInt(ddmmyyyy[3]), parseInt(ddmmyyyy[2]) - 1, parseInt(ddmmyyyy[1]));
-    }
-    // Check for DD-MM-YYYY
-    const ddmmyyyyDash = dateStr.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
-    if (ddmmyyyyDash) {
-      return new Date(parseInt(ddmmyyyyDash[3]), parseInt(ddmmyyyyDash[2]) - 1, parseInt(ddmmyyyyDash[1]));
-    }
-    const parsed = new Date(dateStr);
-    if (!isNaN(parsed.getTime())) return parsed;
-  }
-  if (createdStr) {
-    const parsed = new Date(createdStr);
-    if (!isNaN(parsed.getTime())) return parsed;
-  }
-  return null;
 }
 
 function formatDateGroup(date: Date | null, rawDateStr?: string | null): string {
@@ -153,7 +132,7 @@ export const KlipitReceiptsScreen: React.FC<KlipitReceiptsScreenProps> = ({
 
       // 2. Active Tab
       if (activeTab === 'ai') {
-        const isAi = r.processing_status === 'completed' || r.document_type === 'RECEIPT';
+        const isAi = r.mime_type !== 'text/plain' && r.processing_status === 'completed';
         if (!isAi) return false;
       }
 
@@ -179,7 +158,7 @@ export const KlipitReceiptsScreen: React.FC<KlipitReceiptsScreenProps> = ({
 
       // 5. Date Filter
       if (dateFilter !== 'all') {
-        const rDate = parseReceiptDate(r.invoice_date, (r as any).created_at);
+        const rDate = parseReceiptDate(r.invoice_date, r.created_at);
         if (rDate) {
           const t = rDate.getTime();
           if (dateFilter === 'today' && t < todayStart) return false;
@@ -208,8 +187,8 @@ export const KlipitReceiptsScreen: React.FC<KlipitReceiptsScreenProps> = ({
         const nameB = b.merchant_name || '';
         return nameA.localeCompare(nameB);
       }
-      const dateA = parseReceiptDate(a.invoice_date, (a as any).created_at)?.getTime() || 0;
-      const dateB = parseReceiptDate(b.invoice_date, (b as any).created_at)?.getTime() || 0;
+      const dateA = parseReceiptDate(a.invoice_date, a.created_at)?.getTime() || 0;
+      const dateB = parseReceiptDate(b.invoice_date, b.created_at)?.getTime() || 0;
 
       if (sortOrder === 'oldest') {
         return dateA - dateB;
@@ -233,7 +212,7 @@ export const KlipitReceiptsScreen: React.FC<KlipitReceiptsScreenProps> = ({
 
   const allCount = receipts.length;
   const aiCount = receipts.filter(
-    (r) => r.processing_status === 'completed' || r.document_type === 'RECEIPT'
+    (r) => r.mime_type !== 'text/plain' && r.processing_status === 'completed'
   ).length;
 
   const getSortLabel = (order: SortOption) => {
@@ -261,7 +240,7 @@ export const KlipitReceiptsScreen: React.FC<KlipitReceiptsScreenProps> = ({
     const map = new Map<string, DocumentListItem[]>();
 
     processedReceipts.forEach((r) => {
-      const parsed = parseReceiptDate(r.invoice_date, (r as any).created_at);
+      const parsed = parseReceiptDate(r.invoice_date, r.created_at);
       const title = formatDateGroup(parsed, r.invoice_date);
       if (!map.has(title)) {
         map.set(title, []);
@@ -282,13 +261,11 @@ export const KlipitReceiptsScreen: React.FC<KlipitReceiptsScreenProps> = ({
       <div className="klipit-receipts-header">
         <h1 className="klipit-page-title">Receipts</h1>
         <div className="klipit-header-actions">
-          <button
-            className="klipit-icon-btn"
-            onClick={onShareAll || (() => alert('Sharing your receipts list link'))}
-            title="Share"
-          >
-            <Share2 size={22} color="#1e293b" />
-          </button>
+          {onShareAll && (
+            <button className="klipit-icon-btn" onClick={onShareAll} title="Share">
+              <Share2 size={22} color="#1e293b" />
+            </button>
+          )}
           <button
             className="klipit-icon-btn"
             onClick={() => setIsSearchOpen((prev) => !prev)}
@@ -478,19 +455,19 @@ export const KlipitReceiptsScreen: React.FC<KlipitReceiptsScreenProps> = ({
                   {/* Info */}
                   <div className="klipit-receipt-info">
                     <div className="klipit-receipt-merchant">
-                      {rec.merchant_name || 'Receipt'}
+                      {displayMerchant(rec.merchant_name)}
                     </div>
                     <div className="klipit-receipt-date">
-                      {rec.invoice_date || '24 Oct 2026'}
+                      {formatReceiptDate(rec.invoice_date)}
                     </div>
                     <div className="klipit-badge-ai">
-                      <span>SnapIT AI</span>
+                      <span>{rec.mime_type === 'text/plain' ? 'Manual entry' : rec.review_status === 'needs_review' ? 'Needs review' : 'SnapIT AI'}</span>
                     </div>
                   </div>
 
                   {/* Amount */}
                   <div className="klipit-receipt-amt">
-                    INR {rec.total_amount ? Number(rec.total_amount).toLocaleString() : '3,100'}
+                    {formatMoney(rec.total_amount, rec.currency, 'Not read')}
                   </div>
                 </div>
               ))}
@@ -553,9 +530,9 @@ export const KlipitReceiptsScreen: React.FC<KlipitReceiptsScreenProps> = ({
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '0.6rem' }}>
                   {[
                     { id: 'all', label: 'All Amounts' },
-                    { id: 'under1k', label: '< ₹1,000' },
-                    { id: '1k-5k', label: '₹1,000 - ₹5,000' },
-                    { id: 'over5k', label: '> ₹5,000' },
+                    { id: 'under1k', label: '< 1,000' },
+                    { id: '1k-5k', label: '1,000 - 5,000' },
+                    { id: 'over5k', label: '> 5,000' },
                     { id: 'custom', label: 'Custom' },
                   ].map((af) => (
                     <button
@@ -581,7 +558,7 @@ export const KlipitReceiptsScreen: React.FC<KlipitReceiptsScreenProps> = ({
                   <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
                     <input
                       type="number"
-                      placeholder="Min ₹"
+                      placeholder="Min"
                       value={customMin}
                       onChange={(e) => setCustomMin(e.target.value)}
                       className="klipit-amount-field"
@@ -589,7 +566,7 @@ export const KlipitReceiptsScreen: React.FC<KlipitReceiptsScreenProps> = ({
                     />
                     <input
                       type="number"
-                      placeholder="Max ₹"
+                      placeholder="Max"
                       value={customMax}
                       onChange={(e) => setCustomMax(e.target.value)}
                       className="klipit-amount-field"

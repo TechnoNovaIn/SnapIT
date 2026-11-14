@@ -1,12 +1,31 @@
 import React, { useState, useEffect } from 'react';
-import { Key, Sparkles, ShieldCheck, ExternalLink, Cpu, Trash2 } from 'lucide-react';
-import { api } from '../api/client';
+import { Key, Sparkles, ShieldCheck, ExternalLink, Cpu, Trash2, WifiOff } from 'lucide-react';
+import { api, ANDROID_EMULATOR_API_URL, isNativeMobile } from '../api/client';
 import type { AppSettings } from '../types/document';
 
 interface SettingsViewProps {
   onShowToast: (msg: string, type: 'success' | 'error' | 'info') => void;
   onDataReset?: () => void;
 }
+
+const GEMINI_KEY_STORAGE = 'snapit_gemini_api_key';
+
+const engineLabel = (settings: AppSettings): { title: string; detail: string; online: boolean } => {
+  switch (settings.ocr_engine) {
+    case 'gemini':
+      return { title: 'Google Gemini Vision AI: Connected', detail: `Documents are read with ${settings.gemini_model || 'Gemini'} on the server.`, online: true };
+    case 'local-winocr':
+      return { title: 'Built-in Local OCR: Active', detail: 'Documents are read with the Windows OCR engine and rule-based parsing. Add a Gemini key for far better accuracy on handwriting and tables.', online: true };
+    case 'local-text-only':
+      return { title: 'Text-only Parser: Active', detail: 'This server has no OCR engine, so only PDFs with digital text can be read. Add a Gemini key to read photos and scans.', online: true };
+    case 'offline':
+      return { title: 'Server Not Reachable', detail: 'Receipts are stored on this device only. Set the backend URL below (Android) or start the server.', online: false };
+    default:
+      return settings.has_api_key
+        ? { title: 'Google Gemini Vision AI: Connected', detail: `Using ${settings.gemini_model || 'Gemini'} for document extraction.`, online: true }
+        : { title: 'Built-in Local Parser: Active', detail: 'Add a Gemini API key below for accurate vision extraction.', online: true };
+  }
+};
 
 export const SettingsView: React.FC<SettingsViewProps> = ({ onShowToast, onDataReset }) => {
   const [settings, setSettings] = useState<AppSettings>({
@@ -19,62 +38,98 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onShowToast, onDataR
   const [defaultCurrency, setDefaultCurrency] = useState('INR');
   const [serverUrlInput, setServerUrlInput] = useState(() => api.getCustomBaseUrl());
   const [isSaving, setIsSaving] = useState(false);
+  const [isErasing, setIsErasing] = useState(false);
+  const [hasDeviceKey, setHasDeviceKey] = useState(() => {
+    try {
+      return !!localStorage.getItem(GEMINI_KEY_STORAGE);
+    } catch {
+      return false;
+    }
+  });
 
   useEffect(() => {
-    api.getSettings().then((res) => {
-      setSettings(res);
-      setGeminiModel(res.gemini_model || 'gemini-2.5-flash');
-      setDefaultCurrency(res.default_currency || 'INR');
-      if (res.gemini_api_key) {
-        setApiKeyInput(res.gemini_api_key);
-      }
-    }).catch(() => {
-      onShowToast('Could not load current settings', 'error');
-    });
-  }, []);
+    let cancelled = false;
+    api
+      .getSettings()
+      .then((res) => {
+        if (cancelled) return;
+        setSettings(res);
+        setGeminiModel(res.gemini_model || 'gemini-2.5-flash');
+        setDefaultCurrency(res.default_currency || 'INR');
+      })
+      .catch(() => {
+        if (!cancelled) onShowToast('Could not load current settings', 'error');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [onShowToast]);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSaving(true);
+    const previousUrl = api.getCustomBaseUrl();
     try {
       api.setCustomBaseUrl(serverUrlInput);
       const payload: Partial<AppSettings> = {
         gemini_model: geminiModel,
         default_currency: defaultCurrency,
       };
-      if (apiKeyInput && !apiKeyInput.includes('...')) {
-        payload.gemini_api_key = apiKeyInput.trim();
-        localStorage.setItem('snapit_gemini_api_key', apiKeyInput.trim());
+      const key = apiKeyInput.trim();
+      if (key) {
+        payload.gemini_api_key = key;
       }
 
       const updated = await api.saveSettings(payload);
       setSettings(updated);
+
+      if (key && isNativeMobile()) {
+        // On Android the key is also kept on the device so receipts can be read while offline.
+        try {
+          localStorage.setItem(GEMINI_KEY_STORAGE, key);
+          setHasDeviceKey(true);
+        } catch {
+          /* storage unavailable */
+        }
+      }
+      setApiKeyInput('');
       onShowToast('Settings saved successfully!', 'success');
     } catch (err) {
-      onShowToast('Failed to save settings', 'error');
+      // Roll back a server URL that does not answer so later requests are not sent to it.
+      api.setCustomBaseUrl(previousUrl);
+      setServerUrlInput(previousUrl);
+      onShowToast(err instanceof Error && err.message ? `Failed to save settings: ${err.message}` : 'Failed to save settings', 'error');
     } finally {
       setIsSaving(false);
     }
   };
 
-  const [isErasing, setIsErasing] = useState(false);
+  const handleClearDeviceKey = () => {
+    try {
+      localStorage.removeItem(GEMINI_KEY_STORAGE);
+    } catch {
+      /* storage unavailable */
+    }
+    setHasDeviceKey(false);
+    onShowToast('Removed the API key stored on this device', 'info');
+  };
 
   const handleEraseAll = async () => {
-    if (!window.confirm('Are you sure you want to permanently erase overall data? All receipts, documents, line items, and uploads will be wiped completely.')) {
+    if (!window.confirm('Permanently erase all of your receipts, documents, line items and uploads? This cannot be undone.')) {
       return;
     }
     setIsErasing(true);
     try {
       await api.deleteAllDocuments();
-      if (typeof localStorage !== 'undefined') {
+      try {
         const keysToRemove: string[] = [];
         for (let i = 0; i < localStorage.length; i++) {
           const k = localStorage.key(i);
-          if (k && (k.startsWith('snapit_vault_') || k === 'snapit_offline_docs')) {
-            keysToRemove.push(k);
-          }
+          if (k && (k.startsWith('snapit_vault_') || k === 'snapit_offline_docs')) keysToRemove.push(k);
         }
         keysToRemove.forEach((k) => localStorage.removeItem(k));
+      } catch {
+        /* storage unavailable */
       }
       onShowToast('All data erased successfully! Starting fresh.', 'success');
       if (onDataReset) onDataReset();
@@ -84,6 +139,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onShowToast, onDataR
       setIsErasing(false);
     }
   };
+
+  const engine = engineLabel(settings);
 
   return (
     <div className="settings-container">
@@ -104,8 +161,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onShowToast, onDataR
       {/* Engine Status Banner */}
       <div
         style={{
-          background: settings.has_api_key ? '#ecfdf5' : '#f8fafc',
-          border: `1px solid ${settings.has_api_key ? '#a7f3d0' : '#e2e8f0'}`,
+          background: !engine.online ? '#fef2f2' : settings.has_api_key ? '#ecfdf5' : '#f8fafc',
+          border: `1px solid ${!engine.online ? '#fecaca' : settings.has_api_key ? '#a7f3d0' : '#e2e8f0'}`,
           borderRadius: '10px',
           padding: '1rem',
           display: 'flex',
@@ -114,21 +171,19 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onShowToast, onDataR
           marginBottom: '1.75rem',
         }}
       >
-        {settings.has_api_key ? (
+        {!engine.online ? (
+          <WifiOff size={24} color="#b91c1c" />
+        ) : settings.has_api_key ? (
           <Sparkles size={24} color="#059669" />
         ) : (
           <Cpu size={24} color="#64748b" />
         )}
         <div>
-          <div style={{ fontWeight: 700, fontSize: '0.95rem', color: settings.has_api_key ? '#065f46' : '#1e293b' }}>
-            {settings.has_api_key
-              ? 'Google Gemini Vision AI: Connected'
-              : 'Built-in Local Document Parser: Active'}
+          <div style={{ fontWeight: 700, fontSize: '0.95rem', color: !engine.online ? '#991b1b' : settings.has_api_key ? '#065f46' : '#1e293b' }}>
+            {engine.title}
           </div>
           <div style={{ fontSize: '0.825rem', color: '#64748b', marginTop: '0.15rem' }}>
-            {settings.has_api_key
-              ? `Using multimodal AI (${settings.gemini_model}) for accurate receipt parsing.`
-              : 'Processing documents locally. Add a Gemini API key below for state-of-the-art vision extraction.'}
+            {engine.detail}
           </div>
         </div>
       </div>
@@ -147,14 +202,23 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onShowToast, onDataR
             </a>
           </label>
           <input
-            type="text"
+            type="password"
             className="form-input"
             value={apiKeyInput}
             onChange={(e) => setApiKeyInput(e.target.value)}
-            placeholder="AIzaSy..."
+            placeholder={settings.has_api_key ? `Key saved (${settings.gemini_api_key}). Enter a new key to replace it.` : 'AIzaSy...'}
+            autoComplete="off"
           />
           <div className="form-help">
-            Enter your Google AI Studio API key (starts with <code>AIzaSy...</code>). Keys starting with <code>AQ.</code> are OAuth tokens and cannot be used here.
+            Enter your Google AI Studio API key (starts with <code>AIza</code>). The key is stored on the server and only ever shown masked.
+            {hasDeviceKey && (
+              <>
+                {' '}A copy is also stored on this device for offline reading.{' '}
+                <button type="button" className="klipit-link-btn" onClick={handleClearDeviceKey} style={{ padding: 0 }}>
+                  Remove device copy
+                </button>
+              </>
+            )}
           </div>
         </div>
 
@@ -165,10 +229,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onShowToast, onDataR
             value={geminiModel}
             onChange={(e) => setGeminiModel(e.target.value)}
           >
-            <option value="gemini-2.5-flash">Gemini 2.5 Flash (Recommended - Fastest & Most Accurate)</option>
+            <option value="gemini-2.5-flash">Gemini 2.5 Flash (Recommended)</option>
+            <option value="gemini-2.5-pro">Gemini 2.5 Pro (Deep document analysis, slower)</option>
             <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
-            <option value="gemini-1.5-flash">Gemini 1.5 Flash</option>
-            <option value="gemini-1.5-pro">Gemini 1.5 Pro (Deep Document Analysis)</option>
           </select>
           <div className="form-help">
             Multimodal models analyze handwriting, printed tables, GST stamps, and receipt typography.
@@ -188,6 +251,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onShowToast, onDataR
             <option value="GBP">British Pound (GBP - £)</option>
             <option value="AED">UAE Dirham (AED - د.إ)</option>
           </select>
+          <div className="form-help">Used for manual expenses and for documents whose currency cannot be detected.</div>
         </div>
 
         {/* Web & Mobile Server Connection */}
@@ -195,57 +259,30 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onShowToast, onDataR
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '0.6rem' }}>
             <span style={{ fontSize: '1.1rem' }}>🌐</span>
             <h3 style={{ fontSize: '1.1rem', fontWeight: 800, color: '#0f172a' }}>
-              Platform & Backend Connection (Web & Android)
+              Backend Connection (Web & Android)
             </h3>
           </div>
           <p style={{ color: '#64748b', fontSize: '0.84rem', marginBottom: '1rem' }}>
-            Works seamlessly in Web Browsers and on Android Mobile with local offline vault or live backend API.
+            In a browser the app talks to the server it was loaded from, so this can stay empty.
+            On Android enter the address of your SnapIT server (for example <code>http://192.168.1.10:8000</code> on Wi-Fi, or a tunnel URL).
           </p>
 
           <div className="form-group">
             <label className="form-label">Backend API URL (Optional)</label>
             <input
-              type="text"
+              type="url"
               className="form-input"
               value={serverUrlInput}
               onChange={(e) => setServerUrlInput(e.target.value)}
-              placeholder="e.g. http://192.168.1.10:8000 or http://10.0.2.2:8000"
+              placeholder="e.g. http://192.168.1.10:8000"
+              autoComplete="off"
             />
             <div className="form-help" style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '6px' }}>
-              <button
-                type="button"
-                className="btn-secondary-sm"
-                onClick={() => setServerUrlInput('https://relatives-major-lisa-saints.trycloudflare.com/api')}
-              >
-                ☁️ Cloud Sync (4G/5G/Internet)
+              <button type="button" className="btn-secondary-sm" onClick={() => setServerUrlInput('')}>
+                💻 Same server as the app (default)
               </button>
-              <button
-                type="button"
-                className="btn-secondary-sm"
-                onClick={() => setServerUrlInput('http://192.168.0.156:8000/api')}
-              >
-                📶 Local Wi-Fi (192.168.0.156)
-              </button>
-              <button
-                type="button"
-                className="btn-secondary-sm"
-                onClick={() => setServerUrlInput('/api')}
-              >
-                💻 Default Web (/api)
-              </button>
-              <button
-                type="button"
-                className="btn-secondary-sm"
-                onClick={() => setServerUrlInput('http://10.0.2.2:8000/api')}
-              >
-                📱 Android Emulator
-              </button>
-              <button
-                type="button"
-                className="btn-secondary-sm"
-                onClick={() => setServerUrlInput('')}
-              >
-                Clear / Auto
+              <button type="button" className="btn-secondary-sm" onClick={() => setServerUrlInput(ANDROID_EMULATOR_API_URL)}>
+                📱 Android Emulator (10.0.2.2)
               </button>
             </div>
           </div>
@@ -272,11 +309,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onShowToast, onDataR
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '0.5rem' }}>
           <Trash2 size={18} color="#dc2626" />
           <h3 style={{ fontSize: '1rem', fontWeight: 700, color: '#991b1b', margin: 0 }}>
-            Danger Zone: Erase Overall Data
+            Danger Zone: Erase All Data
           </h3>
         </div>
         <p style={{ fontSize: '0.825rem', color: '#b91c1c', marginBottom: '1rem', lineHeight: 1.4 }}>
-          Permanently delete all receipts, invoices, expense records, scanned images, and local vaults for a completely fresh start.
+          Permanently delete all of your receipts, invoices, expense records, scanned images, and local vaults for a completely fresh start.
         </p>
         <button
           type="button"
@@ -297,7 +334,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onShowToast, onDataR
           }}
         >
           <Trash2 size={15} />
-          <span>{isErasing ? 'Erasing Everything...' : 'Erase Overall Data'}</span>
+          <span>{isErasing ? 'Erasing Everything...' : 'Erase All Data'}</span>
         </button>
       </div>
     </div>

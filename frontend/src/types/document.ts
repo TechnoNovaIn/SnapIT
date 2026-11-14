@@ -66,4 +66,6 @@ export interface AppSettings {
   gemini_model?: string;
   default_currency?: string;
   has_api_key: boolean;
+  /** Which extraction engine the server will use: "gemini", "local-winocr", "local-text-only" or "offline". */
+  ocr_engine?: string | null;
 }

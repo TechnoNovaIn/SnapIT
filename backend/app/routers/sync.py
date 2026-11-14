@@ -1,48 +1,33 @@
-import uuid
-import re
 import base64
-from pathlib import Path
-from typing import List, Optional, Any, Dict
-from datetime import datetime
+import binascii
+import logging
+import re
+import uuid
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional
+
 from fastapi import APIRouter, Depends, Header, HTTPException, Body
 from sqlalchemy.orm import Session
-from sqlalchemy import desc, or_
+from sqlalchemy import desc
 
 from ..database import get_db
 from ..models import Document, LineItem
-from ..schemas import DocumentResponse
 from ..config import settings
-from .documents import _to_document_response
+from ._common import build_user_condition, is_safe_id, safe_float, to_document_response
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/sync", tags=["sync"])
 
-
-def build_user_condition(user_id: str, user_name: Optional[str] = None):
-    """
-    Builds a flexible filter condition to match a user's documents across Web & Mobile devices.
-    Matches exact user_id, phone digits, user name, or shared/unassigned documents.
-    """
-    conditions = [Document.owner_id.is_(None)]
-    clean_id = (user_id or "").strip()
-    if clean_id:
-        conditions.append(Document.owner_id == clean_id)
-        conditions.append(Document.customer_name == clean_id)
-        
-        # Extract digits for phone numbers (e.g. 9009009000 matches +91 9009009000)
-        digits = re.sub(r'\D', '', clean_id)
-        if len(digits) >= 10:
-            last10 = digits[-10:]
-            conditions.append(Document.owner_id.like(f"%{last10}%"))
-            conditions.append(Document.customer_name.like(f"%{last10}%"))
-
-    clean_name = (user_name or "").strip()
-    if clean_name and clean_name.lower() not in ["guest", "user"]:
-        conditions.append(Document.owner_id == clean_name)
-        conditions.append(Document.customer_name == clean_name)
-
-    if conditions:
-        return or_(*conditions)
-    return Document.owner_id == clean_id
+_MAX_SYNC_ASSET_BYTES = 15 * 1024 * 1024
+_DATA_URL_RE = re.compile(r"^data:(image/(?:jpeg|jpg|png|webp)|application/pdf);base64,(.+)$", re.DOTALL)
+_EXT_FOR_MIME = {
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "application/pdf": ".pdf",
+}
 
 
 @router.get("/status")
@@ -53,8 +38,47 @@ def sync_status():
     return {
         "status": "online",
         "service": "SnapIT Cloud Vault Sync",
-        "server_time": datetime.utcnow().isoformat()
+        "server_time": datetime.now(timezone.utc).isoformat()
     }
+
+
+def _save_data_url(data_url: str, basename: str, allowed_mimes) -> Optional[tuple[str, str, int]]:
+    """
+    Writes a base64 data URL to the uploads folder.
+    Returns (relative_path, mime_type, size) or None when the payload is not acceptable.
+    The basename must already be validated (see is_safe_id) because it becomes a file name.
+    """
+    if not data_url or not isinstance(data_url, str):
+        return None
+    m = _DATA_URL_RE.match(data_url.strip())
+    if not m:
+        return None
+    mime, raw = m.group(1), m.group(2)
+    if mime not in allowed_mimes:
+        return None
+    # Rough size check before decoding (base64 inflates by 4/3).
+    if len(raw) * 3 // 4 > _MAX_SYNC_ASSET_BYTES:
+        logger.warning("Rejected synced asset for %s: too large", basename)
+        return None
+    try:
+        data = base64.b64decode(raw, validate=False)
+    except (binascii.Error, ValueError) as e:
+        logger.warning("Error decoding synced base64 asset: %s", e)
+        return None
+    if not data:
+        return None
+    target = settings.UPLOAD_DIR / f"{basename}{_EXT_FOR_MIME[mime]}"
+    try:
+        with open(target, "wb") as f:
+            f.write(data)
+    except OSError as e:
+        logger.warning("Error saving synced asset: %s", e)
+        return None
+    try:
+        rel = str(target.relative_to(settings.BASE_DIR))
+    except ValueError:
+        rel = str(target)
+    return rel, ("image/jpeg" if mime == "image/jpg" else mime), len(data)
 
 
 @router.post("/vault")
@@ -66,37 +90,31 @@ def sync_vault(
 ):
     """
     Bidirectional vault synchronization between Web and Mobile clients.
-    Merges local documents from phone/browser into SQLite database,
-    and returns the authoritative full list of documents for this user.
+    Merges local documents from phone/browser into the database and returns the
+    authoritative full list of documents for this user.
     """
-    user_id = (payload.get("user_id") or x_user_id or "").strip()
-    user_name = (payload.get("user_name") or x_user_name or "User").strip()
-
-    print(f"[SYNC_VAULT] user_id='{user_id}', user_name='{user_name}', incoming_docs_count={len(payload.get('documents', []))}")
+    user_id = str(payload.get("user_id") or x_user_id or "").strip()[:255]
+    user_name = str(payload.get("user_name") or x_user_name or "User").strip()[:255]
 
     if not user_id:
         raise HTTPException(status_code=400, detail="Missing user identifier for sync")
 
-    incoming_docs = payload.get("documents", [])
+    incoming_docs = payload.get("documents") or []
+    if not isinstance(incoming_docs, list):
+        raise HTTPException(status_code=400, detail="'documents' must be a list")
 
-    def _save_b64(b64_str: str, filename: str) -> Optional[str]:
-        if not b64_str or not b64_str.startswith("data:image/"):
-            return None
-        try:
-            raw = b64_str.split(",", 1)[1] if "," in b64_str else b64_str
-            data = base64.b64decode(raw)
-            target = settings.UPLOAD_DIR / filename
-            with open(target, "wb") as f:
-                f.write(data)
-            return str(target.relative_to(settings.BASE_DIR))
-        except Exception as e:
-            print(f"Error saving synced base64 asset: {e}")
-            return None
+    logger.info("[sync] user=%s incoming=%d", user_id, len(incoming_docs))
+    user_cond = build_user_condition(user_id, user_name)
+    skipped = 0
 
-    # 1. Upsert incoming documents into SQLite
+    # 1. Upsert incoming documents
     for item in incoming_docs:
-        doc_id = item.get("id")
-        if not doc_id:
+        if not isinstance(item, dict):
+            skipped += 1
+            continue
+        doc_id = str(item.get("id") or "").strip()
+        if not is_safe_id(doc_id):
+            skipped += 1
             continue
 
         thumb_data = item.get("thumbnail_url") or ""
@@ -104,107 +122,112 @@ def sync_vault(
 
         existing = db.query(Document).filter(Document.id == doc_id).first()
         if existing:
-            # Only update if the incoming item has real, non-placeholder, non-zero values
-            incoming_merchant = (item.get("merchant_name") or "").strip()
-            if incoming_merchant and not any(p in incoming_merchant for p in ["Analyzing", "Needs Review", "Handwritten Bill"]):
-                existing.merchant_name = incoming_merchant
-            incoming_tot = item.get("total_amount")
-            if incoming_tot is not None and float(incoming_tot) > 0:
-                existing.total_amount = float(incoming_tot)
+            # Never let one client overwrite another user's record.
+            is_owner = db.query(Document.id).filter(Document.id == doc_id, user_cond).first() is not None
+            if not is_owner:
+                skipped += 1
+                continue
+
+            # Only update with real, non-placeholder values
+            incoming_merchant = str(item.get("merchant_name") or "").strip()
+            if incoming_merchant and not any(p in incoming_merchant for p in ("Analyzing", "Needs Review", "Scanning", "Unverified", "Unreadable")):
+                existing.merchant_name = incoming_merchant[:255]
+            incoming_tot = safe_float(item.get("total_amount"), 0.0)
+            if incoming_tot > 0:
+                existing.total_amount = incoming_tot
             if item.get("invoice_date"):
-                existing.invoice_date = item.get("invoice_date")
-            if item.get("invoice_number") and not str(item.get("invoice_number")).startswith("INV-"):
-                existing.invoice_number = item.get("invoice_number")
-            if item.get("tags"):
-                existing.tags = item.get("tags")
-            if not existing.owner_id and user_id:
+                existing.invoice_date = str(item.get("invoice_date"))[:50]
+            inv_no = str(item.get("invoice_number") or "").strip()
+            if inv_no and not inv_no.startswith("INV-"):
+                existing.invoice_number = inv_no[:100]
+            if isinstance(item.get("tags"), list) and item.get("tags"):
+                existing.tags = [str(t)[:50] for t in item["tags"] if t][:10]
+            if not existing.owner_id:
                 existing.owner_id = user_id
             if not existing.thumbnail_path and thumb_data:
-                saved_thumb = _save_b64(thumb_data, f"{doc_id}_thumb.webp")
-                if saved_thumb:
-                    existing.thumbnail_path = saved_thumb
+                saved = _save_data_url(thumb_data, f"{doc_id}_thumb", {"image/jpeg", "image/jpg", "image/png", "image/webp"})
+                if saved:
+                    existing.thumbnail_path = saved[0]
             if not existing.storage_path and file_data:
-                saved_file = _save_b64(file_data, f"{doc_id}.jpg")
-                if saved_file:
-                    existing.storage_path = saved_file
+                saved = _save_data_url(file_data, doc_id, set(_EXT_FOR_MIME))
+                if saved:
+                    existing.storage_path, existing.mime_type, existing.file_size = saved
             db.commit()
             continue
 
-        # If incoming doc is a local offline receipt, check if a similar one exists
-        merch = (item.get("merchant_name") or "").strip()
-        tot = float(item.get("total_amount") or 0)
-        inv_date = item.get("invoice_date") or ""
+        # New record: skip if an identical receipt already exists for this user
+        merch = str(item.get("merchant_name") or "").strip()[:255]
+        tot = safe_float(item.get("total_amount"), 0.0)
+        inv_date = str(item.get("invoice_date") or "").strip()[:50]
 
-        match = db.query(Document).filter(
-            build_user_condition(user_id, user_name),
+        match = db.query(Document.id).filter(
+            user_cond,
             Document.merchant_name == merch,
             Document.total_amount == tot,
             Document.invoice_date == inv_date
         ).first()
-
         if match:
             continue
 
-        saved_thumb = _save_b64(thumb_data, f"{doc_id}_thumb.webp") if thumb_data else None
-        saved_file = _save_b64(file_data, f"{doc_id}.jpg") if file_data else None
+        saved_thumb = _save_data_url(thumb_data, f"{doc_id}_thumb", {"image/jpeg", "image/jpg", "image/png", "image/webp"}) if thumb_data else None
+        saved_file = _save_data_url(file_data, doc_id, set(_EXT_FOR_MIME)) if file_data else None
 
-        # Create new document record in database
+        review_status = item.get("review_status") if item.get("review_status") in ("ready_for_review", "needs_review", "verified") else None
+        processing_status = item.get("processing_status") if item.get("processing_status") in ("pending", "processing", "completed", "failed") else None
+
         new_doc = Document(
             id=doc_id,
             owner_id=user_id,
-            filename=item.get("filename") or f"{merch.lower().replace(' ', '_')}.receipt",
-            storage_path=saved_file or "",
-            file_size=item.get("file_size") or 1024,
-            mime_type=item.get("mime_type") or "image/jpeg",
-            thumbnail_path=saved_thumb,
-            document_type=item.get("document_type") or "Receipt",
-            merchant_name=merch,
+            filename=str(item.get("filename") or f"{(merch or 'receipt').lower().replace(' ', '_')}.receipt")[:255],
+            storage_path=saved_file[0] if saved_file else "",
+            file_size=saved_file[2] if saved_file else int(safe_float(item.get("file_size"), 0.0)),
+            mime_type=saved_file[1] if saved_file else str(item.get("mime_type") or "image/jpeg")[:100],
+            thumbnail_path=saved_thumb[0] if saved_thumb else None,
+            document_type=str(item.get("document_type") or "Receipt")[:50],
+            merchant_name=merch or None,
             merchant_address=item.get("merchant_address"),
             customer_name=user_name if user_name != "User" else user_id,
-            invoice_number=item.get("invoice_number") or f"INV-{uuid.uuid4().hex[:6].upper()}",
-            invoice_date=inv_date or datetime.utcnow().strftime("%Y-%m-%d"),
-            currency=item.get("currency") or "INR",
-            subtotal=item.get("subtotal") or tot,
-            discount=item.get("discount") or 0.0,
-            tax_amount=item.get("tax_amount") or 0.0,
+            invoice_number=(str(item.get("invoice_number"))[:100] if item.get("invoice_number") else None),
+            invoice_date=inv_date or None,
+            currency=str(item.get("currency") or "INR").upper()[:10],
+            subtotal=safe_float(item.get("subtotal"), tot),
+            discount=safe_float(item.get("discount"), 0.0),
+            tax_amount=safe_float(item.get("tax_amount"), 0.0),
             total_amount=tot,
-            payment_status=item.get("payment_status") or "PAID",
-            review_status=item.get("review_status") or "verified",
-            processing_status=item.get("processing_status") or "completed",
-            confidence_score=item.get("confidence_score") or 1.0,
-            tags=item.get("tags") or [item.get("document_type") or "Receipt"]
+            payment_status=(str(item.get("payment_status"))[:50] if item.get("payment_status") else None),
+            review_status=review_status or ("needs_review" if tot <= 0 else "ready_for_review"),
+            processing_status=processing_status or "completed",
+            confidence_score=min(max(safe_float(item.get("confidence_score"), 0.5), 0.0), 1.0),
+            tags=[str(t)[:50] for t in (item.get("tags") or []) if t][:10] if isinstance(item.get("tags"), list) else [],
+            uncertain_fields=[str(f) for f in (item.get("uncertain_fields") or []) if f] if isinstance(item.get("uncertain_fields"), list) else [],
         )
         db.add(new_doc)
-        db.commit()
-        db.refresh(new_doc)
 
-        # Add line items if present
-        line_items_data = item.get("line_items") or []
-        for li in line_items_data:
-            line_item = LineItem(
+        for li in item.get("line_items") or []:
+            if not isinstance(li, dict):
+                continue
+            db.add(LineItem(
                 id=str(uuid.uuid4()),
                 document_id=new_doc.id,
-                description=li.get("description") or merch,
-                category=li.get("category") or "General",
-                quantity=float(li.get("quantity") or 1),
-                unit_price=float(li.get("unit_price") or tot),
-                tax_amount=float(li.get("tax_amount") or 0),
-                total=float(li.get("total") or tot),
-                is_suggested_category=False
-            )
-            db.add(line_item)
+                description=str(li.get("description") or merch or "Item")[:255],
+                category=str(li.get("category") or "General")[:100],
+                quantity=safe_float(li.get("quantity"), 1.0),
+                unit_price=safe_float(li.get("unit_price"), tot),
+                tax_amount=safe_float(li.get("tax_amount"), 0.0),
+                total=safe_float(li.get("total"), tot),
+                is_suggested_category=bool(li.get("is_suggested_category", False))
+            ))
         db.commit()
 
-    # 2. Query ALL documents belonging to this user
-    user_cond = build_user_condition(user_id, user_name)
+    # 2. Return every document belonging to this user
     all_docs = db.query(Document).filter(user_cond).order_by(desc(Document.created_at)).all()
-
-    results = [_to_document_response(d) for d in all_docs]
-    print(f"[SYNC_VAULT] returning {len(results)} docs for user_id='{user_id}', docs={[d.id for d in all_docs]}")
+    results = [to_document_response(d) for d in all_docs]
+    logger.info("[sync] user=%s returning=%d skipped=%d", user_id, len(results), skipped)
 
     return {
         "status": "ok",
         "user_id": user_id,
         "synced_count": len(results),
+        "skipped": skipped,
         "documents": results
     }

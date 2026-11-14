@@ -83,6 +83,7 @@ export const App: React.FC = () => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingStep, setProcessingStep] = useState<ProcessingStep>('uploading');
   const [processingError, setProcessingError] = useState<string | null>(null);
+  const [failedAtStep, setFailedAtStep] = useState<ProcessingStep | null>(null);
   const [lastUploadedFile, setLastUploadedFile] = useState<File | null>(null);
 
   // Android Native Lifecycle: Status Bar & Hardware Back Button
@@ -147,7 +148,7 @@ export const App: React.FC = () => {
       if (userAccount.isSignedIn) {
         refreshReceipts();
       }
-    }, 5000); // Auto-sync every 5 seconds in background across all devices
+    }, 15000); // Background cross-device refresh every 15 seconds while signed in
 
     // Check shared document token in URL if present
     const params = new URLSearchParams(window.location.search);
@@ -184,43 +185,36 @@ export const App: React.FC = () => {
       // Fallback: check receiptsList in state so user is never blocked
       const item = receiptsList.find((r) => r.id === id);
       if (item) {
+        // Only what the list already knows is shown; nothing is invented for the missing fields.
         const fallbackDoc: DocumentData = {
           id: item.id,
           filename: item.filename,
           file_size: item.file_size,
           mime_type: item.mime_type,
-          file_url: item.thumbnail_url || '',
+          file_url: '',
           thumbnail_url: item.thumbnail_url,
           document_type: item.document_type || 'Receipt',
-          merchant_name: item.merchant_name || 'Receipt',
-          customer_name: userAccount.name || 'User',
-          invoice_number: item.invoice_number || 'INV-001',
-          invoice_date: item.invoice_date || new Date().toISOString().split('T')[0],
+          merchant_name: item.merchant_name,
+          customer_name: userAccount.name || null,
+          invoice_number: item.invoice_number,
+          invoice_date: item.invoice_date,
           currency: item.currency || 'INR',
-          subtotal: item.total_amount || 0,
+          subtotal: null,
           discount: 0,
-          tax_amount: 0,
-          total_amount: item.total_amount || 0,
-          payment_status: 'PAID',
-          review_status: (item.review_status as any) || 'verified',
-          processing_status: (item.processing_status as any) || 'completed',
-          confidence_score: 1.0,
-          tags: [item.document_type || 'General'],
-          uncertain_fields: [],
-          line_items: [
-            {
-              description: item.merchant_name || 'Purchase Item',
-              category: item.document_type || 'General',
-              quantity: 1,
-              unit_price: item.total_amount || 0,
-              tax_amount: 0,
-              total: item.total_amount || 0,
-            },
-          ],
-          share_token: `share-${item.id}`,
+          tax_amount: null,
+          total_amount: item.total_amount,
+          payment_status: null,
+          review_status: (item.review_status as DocumentData['review_status']) || 'needs_review',
+          processing_status: (item.processing_status as DocumentData['processing_status']) || 'completed',
+          confidence_score: 0,
+          tags: [],
+          uncertain_fields: ['line_items'],
+          line_items: [],
+          share_token: '',
           created_at: item.created_at || new Date().toISOString(),
           updated_at: item.created_at || new Date().toISOString(),
         };
+        showToast('Showing summary only: full details could not be loaded', 'info');
         setActiveDocument(fallbackDoc);
         setCurrentScreen('details');
         window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -241,21 +235,26 @@ export const App: React.FC = () => {
     setLastUploadedFile(file);
     setIsProcessing(true);
     setProcessingError(null);
+    setFailedAtStep(null);
     setProcessingStep('uploading');
+    let currentStep: ProcessingStep = 'uploading';
 
     try {
       // Step 1: Uploading
       const uploaded = await api.uploadDocument(file);
 
       // Step 2: Reading
+      currentStep = 'reading';
       setProcessingStep('reading');
       await new Promise((r) => setTimeout(r, 500));
 
       // Step 3: Extracting with AI
+      currentStep = 'extracting';
       setProcessingStep('extracting');
       const processed = await api.processDocument(uploaded.id);
 
       // Step 4: Validating
+      currentStep = 'validating';
       setProcessingStep('validating');
       await new Promise((r) => setTimeout(r, 400));
 
@@ -267,10 +266,16 @@ export const App: React.FC = () => {
       setActiveDocument(processed);
       setCurrentScreen('details');
       refreshReceipts();
-      showToast('Receipt clipped and extracted with SnapIT AI!', 'success');
+      showToast(
+        processed.review_status === 'needs_review'
+          ? 'Receipt saved. Some fields could not be read, please review them.'
+          : 'Receipt clipped and extracted with SnapIT AI!',
+        processed.review_status === 'needs_review' ? 'info' : 'success'
+      );
     } catch (err: any) {
+      setFailedAtStep(currentStep);
       setProcessingStep('failed');
-      setProcessingError(err.message || 'Failed to process receipt');
+      setProcessingError(err?.message || 'Failed to process receipt');
     }
   };
 
@@ -528,6 +533,7 @@ export const App: React.FC = () => {
         {isProcessing && (
           <ProcessingModal
             currentStep={processingStep}
+            failedAtStep={failedAtStep}
             errorMessage={processingError}
             file={lastUploadedFile}
             onRetry={() => {

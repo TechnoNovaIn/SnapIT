@@ -44,7 +44,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
   const [emailAddress, setEmailAddress] = useState(defaultEmail || '');
   const [error, setError] = useState<string | null>(null);
 
-  // Google Account Access Dialog State
+  // Email sign-in dialog state (there is no third-party OAuth; the account is identified by its email)
   const [isGoogleModalOpen, setIsGoogleModalOpen] = useState(false);
   const [googleName, setGoogleName] = useState(fullName || '');
   const [googleEmail, setGoogleEmail] = useState(emailAddress || '');
@@ -90,11 +90,11 @@ export const LoginPage: React.FC<LoginPageProps> = ({
 
   const handleConfirmGoogleSignIn = () => {
     if (!googleName.trim()) {
-      setGoogleError('Please enter your Google account name');
+      setGoogleError('Please enter your name');
       return;
     }
     if (!googleEmail.trim() || !googleEmail.includes('@')) {
-      setGoogleError('Please enter a valid Google email address');
+      setGoogleError('Please enter a valid email address');
       return;
     }
 
@@ -104,7 +104,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
     const finalPhone = cleanDigits ? `${selectedCountry.code} ${cleanDigits}` : undefined;
 
     setIsGoogleModalOpen(false);
-    onLogin(finalName, finalEmail, 'google', finalPhone, finalEmail);
+    onLogin(finalName, finalEmail, 'email', finalPhone, finalEmail);
   };
 
   return (
@@ -324,12 +324,12 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                 d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
               />
             </svg>
-            <span>Sign in with Google</span>
+            <span>Continue with email</span>
           </button>
         </form>
       </div>
 
-      {/* 3. GOOGLE ACCOUNT ACCESS MODAL (Universal for any Google user) */}
+      {/* 3. EMAIL SIGN-IN MODAL */}
       {isGoogleModalOpen && (
         <div className="google-auth-overlay" onClick={() => setIsGoogleModalOpen(false)}>
           <div className="google-auth-modal" onClick={(e) => e.stopPropagation()}>
@@ -342,8 +342,8 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                   <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" />
                 </svg>
                 <div className="google-header-text">
-                  <h3>Sign in with Google</h3>
-                  <p>Access your private personal vault</p>
+                  <h3>Continue with email</h3>
+                  <p>Your vault is keyed to this email address</p>
                 </div>
               </div>
               <button
@@ -364,7 +364,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                 <label style={{ fontSize: '0.82rem', fontWeight: 600, color: '#334155', display: 'flex', alignItems: 'center', gap: '6px' }}>
                   <User size={14} color="#64748b" />
-                  <span>Google Account Name</span>
+                  <span>Your Name</span>
                 </label>
                 <input
                   type="text"
@@ -382,7 +382,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                 <label style={{ fontSize: '0.82rem', fontWeight: 600, color: '#334155', display: 'flex', alignItems: 'center', gap: '6px' }}>
                   <Mail size={14} color="#64748b" />
-                  <span>Google Email Address</span>
+                  <span>Email Address</span>
                 </label>
                 <input
                   type="email"
@@ -412,7 +412,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
               </div>
 
               <div className="google-auth-disclaimer">
-                🔒 Privacy Guarantee: Your personal receipts and expenditure are strictly isolated to your account. No other user can see your data.
+                🔒 Receipts are kept in a vault keyed to this account. There is no password: anyone who knows the email or phone number used here can open the same vault, so use a private server.
               </div>
 
               <button
@@ -421,7 +421,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                 onClick={handleConfirmGoogleSignIn}
               >
                 <ShieldCheck size={16} />
-                <span>Sign In to My Private Vault</span>
+                <span>Open My Vault</span>
               </button>
             </div>
           </div>

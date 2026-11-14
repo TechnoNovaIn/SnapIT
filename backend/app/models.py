@@ -1,9 +1,15 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 from sqlalchemy import Column, String, Float, Integer, Boolean, Text, DateTime, ForeignKey
 from sqlalchemy.orm import relationship
 from .database import Base
+
+
+def utcnow() -> datetime:
+    """Naive UTC timestamp (datetime.utcnow is deprecated since Python 3.12)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
 
 class Document(Base):
     __tablename__ = "documents"
@@ -14,7 +20,7 @@ class Document(Base):
     file_size = Column(Integer, default=0)
     mime_type = Column(String(100), nullable=False)
     thumbnail_path = Column(String(512), nullable=True)
-    
+
     # Metadata fields
     owner_id = Column(String(255), nullable=True, index=True)
     document_type = Column(String(50), default="Receipt") # Receipt, Tax Invoice, Purchase Order, Bill, Medical Bill, Transport Bill, Utility Bill, Other
@@ -26,29 +32,29 @@ class Document(Base):
     due_date = Column(String(50), nullable=True)
     tax_id = Column(String(100), nullable=True) # GSTIN, Tax ID, etc.
     currency = Column(String(10), default="INR")
-    
+
     # Financial fields
     subtotal = Column(Float, nullable=True)
     discount = Column(Float, default=0.0)
     tax_amount = Column(Float, nullable=True)
     total_amount = Column(Float, nullable=True)
-    
+
     payment_status = Column(String(50), nullable=True) # Paid, Unpaid, Pending, Partial, etc.
     review_status = Column(String(50), default="ready_for_review") # ready_for_review, needs_review, verified
-    processing_status = Column(String(50), default="pending") # pending, reading, extracting, validating, completed, failed
+    processing_status = Column(String(50), default="pending") # pending, processing, completed, failed
     error_message = Column(Text, nullable=True)
     confidence_score = Column(Float, default=0.9)
     raw_text = Column(Text, nullable=True)
-    
+
     # JSON encoded tags and uncertain fields list
     tags_json = Column(Text, default="[]")
     uncertain_fields_json = Column(Text, default="[]")
-    
+
     # Secure share token
     share_token = Column(String(64), unique=True, default=lambda: uuid.uuid4().hex)
-    
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
     # Relationships
     line_items = relationship("LineItem", back_populates="document", cascade="all, delete-orphan", lazy="joined")
@@ -88,7 +94,7 @@ class LineItem(Base):
     tax_amount = Column(Float, default=0.0)
     total = Column(Float, default=0.0)
     is_suggested_category = Column(Boolean, default=False)
-    
+
     document = relationship("Document", back_populates="line_items")
 
 

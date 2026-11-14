@@ -4,6 +4,15 @@ import {
   ChevronDown,
   Sparkles,
 } from 'lucide-react';
+import { displayMerchant, formatMoney, formatReceiptDate, parseReceiptDate } from '../utils/format';
+
+type Period = 'This month' | 'Last month' | 'All time';
+const DONUT_CIRCUMFERENCE = 2 * Math.PI * 85;
+
+const inMonth = (r: DocumentListItem, year: number, month: number): boolean => {
+  const d = parseReceiptDate(r.invoice_date, r.created_at);
+  return !!d && d.getFullYear() === year && d.getMonth() === month;
+};
 
 interface KlipitHomeScreenProps {
   receipts: DocumentListItem[];
@@ -34,13 +43,22 @@ export const KlipitHomeScreen: React.FC<KlipitHomeScreenProps> = ({
   onOpenExpenditureAnalysis,
   userName = 'User',
 }) => {
-  const [activeSlide, setActiveSlide] = useState<number>(0);
-  const [selectedMonth, setSelectedMonth] = useState<string>('This month');
+  const [selectedMonth, setSelectedMonth] = useState<Period>('This month');
 
-  // Calculate monthly stats
-  const countThisMonth = receipts.length;
-  const calculatedTotal = receipts.reduce((acc, r) => acc + (r.total_amount || 0), 0);
-  const totalExpenditure = calculatedTotal;
+  // Monthly stats derived from receipt dates (invoice date, falling back to upload date)
+  const today = new Date();
+  const lastMonth = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+  const countThisMonth = receipts.filter((r) => inMonth(r, today.getFullYear(), today.getMonth())).length;
+  const sum = (list: DocumentListItem[]) => list.reduce((acc, r) => acc + (Number(r.total_amount) || 0), 0);
+  const allTimeTotal = sum(receipts);
+  const totalExpenditure =
+    selectedMonth === 'This month'
+      ? sum(receipts.filter((r) => inMonth(r, today.getFullYear(), today.getMonth())))
+      : selectedMonth === 'Last month'
+        ? sum(receipts.filter((r) => inMonth(r, lastMonth.getFullYear(), lastMonth.getMonth())))
+        : allTimeTotal;
+  const donutRatio = allTimeTotal > 0 ? Math.min(totalExpenditure / allTimeTotal, 1) : 0;
+  const currency = receipts[0]?.currency || 'INR';
 
   return (
     <div className="klipit-screen-container">
@@ -130,17 +148,6 @@ export const KlipitHomeScreen: React.FC<KlipitHomeScreenProps> = ({
         </div>
       </div>
 
-      {/* Hero Carousel Dots */}
-      <div className="klipit-carousel-dots">
-        <div
-          className={`klipit-dot ${activeSlide === 0 ? 'active' : ''}`}
-          onClick={() => setActiveSlide(0)}
-        />
-        <div
-          className={`klipit-dot ${activeSlide === 1 ? 'active' : ''}`}
-          onClick={() => setActiveSlide(1)}
-        />
-      </div>
 
       {/* Recent Receipts Section */}
       <div className="klipit-section">
@@ -179,19 +186,19 @@ export const KlipitHomeScreen: React.FC<KlipitHomeScreenProps> = ({
                 {/* Details */}
                 <div className="klipit-receipt-info">
                   <div className="klipit-receipt-merchant">
-                    {rec.merchant_name && !rec.merchant_name.includes('Analyzing') ? rec.merchant_name : 'Handwritten Bill'}
+                    {displayMerchant(rec.merchant_name)}
                   </div>
                   <div className="klipit-receipt-date">
-                    {rec.invoice_date || '24 Oct 2026'}
+                    {formatReceiptDate(rec.invoice_date)}
                   </div>
                   <div className="klipit-badge-ai">
-                    <span>SnapIT AI</span>
+                    <span>{rec.mime_type === 'text/plain' ? 'Manual entry' : rec.review_status === 'needs_review' ? 'Needs review' : 'SnapIT AI'}</span>
                   </div>
                 </div>
 
                 {/* Amount */}
                 <div className="klipit-receipt-amt">
-                  INR {Number(rec.total_amount || 0).toLocaleString()}
+                  {formatMoney(rec.total_amount, rec.currency, 'Not read')}
                 </div>
               </div>
             ))}
@@ -245,18 +252,18 @@ export const KlipitHomeScreen: React.FC<KlipitHomeScreenProps> = ({
                 fill="none"
                 stroke="#e2959d"
                 strokeWidth="42"
-                strokeDasharray="534"
-                strokeDashoffset={100}
-                strokeLinecap="round"
+                strokeDasharray={DONUT_CIRCUMFERENCE}
+                strokeDashoffset={DONUT_CIRCUMFERENCE * (1 - donutRatio)}
+                strokeLinecap={donutRatio > 0 ? 'round' : 'butt'}
                 transform="rotate(-90 120 120)"
               />
             </svg>
 
             <div className="klipit-donut-center">
               <div className="klipit-donut-amt">
-                INR {totalExpenditure.toLocaleString()}
+                {formatMoney(totalExpenditure, currency)}
               </div>
-              <div className="klipit-donut-sub">Total expenditure</div>
+              <div className="klipit-donut-sub">{selectedMonth === 'All time' ? 'Total expenditure' : `${Math.round(donutRatio * 100)}% of all-time spend`}</div>
             </div>
           </div>
         </div>

@@ -16,8 +16,9 @@ import {
   Eye,
   Receipt
 } from 'lucide-react';
-import { api, resolveAssetUrl } from '../api/client';
+import { api, resolveAssetUrl, isLocalId } from '../api/client';
 import { DocumentPreview } from './DocumentPreview';
+import { displayMerchant, formatMoney, formatReceiptDate } from '../utils/format';
 
 interface KlipitReceiptDetailsScreenProps {
   document: DocumentData;
@@ -42,18 +43,21 @@ export const KlipitReceiptDetailsScreen: React.FC<KlipitReceiptDetailsScreenProp
   const [newTagInput, setNewTagInput] = useState('');
   const [thumbLoadError, setThumbLoadError] = useState(false);
 
-  const isPdf = doc.mime_type === 'application/pdf' || doc.filename.toLowerCase().endsWith('.pdf');
-  const fileUrl = resolveAssetUrl(doc.file_url || api.getOriginalFileUrl(doc.id));
-  const thumbUrl = resolveAssetUrl(doc.thumbnail_url || api.getThumbnailUrl(doc.id));
+  const isPdf = doc.mime_type === 'application/pdf' || (doc.filename || '').toLowerCase().endsWith('.pdf');
+  const isLocalOnly = isLocalId(doc.id);
+  const isManual = doc.mime_type === 'text/plain';
+  const fileUrl = isManual ? '' : resolveAssetUrl(doc.file_url || (isLocalOnly ? '' : api.getOriginalFileUrl(doc.id)));
+  const thumbUrl = isManual ? '' : resolveAssetUrl(doc.thumbnail_url || (isLocalOnly ? '' : api.getThumbnailUrl(doc.id)));
+  const merchantLabel = displayMerchant(doc.merchant_name);
+  const totalLabel = formatMoney(doc.total_amount, doc.currency, 'Not read');
 
   const handleShare = async () => {
     try {
       const res = await api.createShareLink(doc.id);
-      const shareUrl = `${window.location.origin}${res.share_url}`;
-      await navigator.clipboard.writeText(shareUrl);
-      onShowToast('Secure share link copied to clipboard!', 'success');
-    } catch {
-      onShowToast('Link copied to clipboard', 'info');
+      await navigator.clipboard.writeText(res.share_url);
+      onShowToast('Share link copied to clipboard. Anyone with the link can view this receipt.', 'success');
+    } catch (err) {
+      onShowToast(err instanceof Error && err.message ? err.message : 'Could not create a share link', 'error');
     }
   };
 
@@ -74,24 +78,10 @@ export const KlipitReceiptDetailsScreen: React.FC<KlipitReceiptDetailsScreenProp
     onUpdateTags(updated);
   };
 
-  const lineItems = doc.line_items && doc.line_items.length > 0
-    ? doc.line_items
-    : [
-        {
-          id: 'def-1',
-          document_id: doc.id,
-          description: 'Itemized Bill',
-          category: 'General',
-          unit_price: doc.total_amount || 0,
-          amount: doc.total_amount || 0,
-          total: doc.total_amount || 0,
-          quantity: 1,
-          tax_amount: 0,
-          is_suggested_category: false,
-        },
-      ];
-
-  const totalItemsCount = lineItems.reduce((acc, item) => acc + (item.quantity || 1), 0);
+  const lineItems = doc.line_items || [];
+  const totalItemsCount = lineItems.reduce((acc, item) => acc + (Number(item.quantity) || 0), 0);
+  const needsReview = doc.review_status === 'needs_review' || doc.total_amount === null || doc.total_amount === undefined;
+  const unreadFields = (doc.uncertain_fields || []).map((f) => f.replace(/_/g, ' '));
 
   return (
     <div className="klipit-screen-container klipit-details-view">
@@ -196,19 +186,19 @@ export const KlipitReceiptDetailsScreen: React.FC<KlipitReceiptDetailsScreenProp
             {/* Right Info */}
             <div className="klipit-top-info-block">
               <div className="klipit-amt-pill-badge">
-                INR {doc.total_amount ? Number(doc.total_amount).toLocaleString() : '0'}
+                {totalLabel}
               </div>
 
               <div className="klipit-summary-merchant">
-                Merchant: {doc.merchant_name && !doc.merchant_name.includes('Analyzing') ? doc.merchant_name : 'Handwritten Bill (Needs Review)'}
+                Merchant: {merchantLabel}
               </div>
 
               <div className="klipit-summary-meta">
-                Total {totalItemsCount} item{totalItemsCount === 1 ? '' : 's'}
+                {lineItems.length === 0 ? 'No line items read' : `Total ${totalItemsCount} item${totalItemsCount === 1 ? '' : 's'}`}
               </div>
 
               <div className="klipit-summary-meta">
-                {doc.invoice_date || new Date().toISOString().split('T')[0]}
+                {formatReceiptDate(doc.invoice_date)}
               </div>
 
               {/* Quick Bill Preview Action Pill */}
@@ -260,8 +250,8 @@ export const KlipitReceiptDetailsScreen: React.FC<KlipitReceiptDetailsScreenProp
             />
           </div>
 
-          {/* Review Required Banner for Handwritten or Incomplete Bills */}
-          {(doc.review_status === 'needs_review' || !doc.total_amount || doc.total_amount === 0) && (
+          {/* Review Required Banner for bills with unread fields */}
+          {needsReview && (
             <div
               style={{
                 background: '#fffbeb',
@@ -282,7 +272,9 @@ export const KlipitReceiptDetailsScreen: React.FC<KlipitReceiptDetailsScreenProp
                     Review Required
                   </div>
                   <div style={{ fontSize: '0.75rem', color: '#b45309' }}>
-                    Handwritten text detected. Tap Edit Details to confirm amounts.
+                    {unreadFields.length > 0
+                      ? `Could not read: ${unreadFields.join(', ')}. Tap Edit Details to fill them in.`
+                      : 'Some details could not be read. Tap Edit Details to confirm them.'}
                   </div>
                 </div>
               </div>
@@ -313,41 +305,62 @@ export const KlipitReceiptDetailsScreen: React.FC<KlipitReceiptDetailsScreenProp
             <div className="klipit-paper-receipt-body">
               {/* Merchant Title */}
               <div className="klipit-paper-merchant">
-                {doc.merchant_name && !doc.merchant_name.includes('Analyzing') ? doc.merchant_name : 'Handwritten Bill (Needs Review)'}
+                {merchantLabel}
               </div>
+              {doc.merchant_address && (
+                <div className="klipit-paper-meta-row">{doc.merchant_address}</div>
+              )}
 
-              {/* Date, Invoice No, Total Items */}
+              {/* Date, Invoice No, Tax ID, Total Items */}
               <div className="klipit-paper-meta-row">
-                Date: {doc.invoice_date || 'N/A'}
+                Date: {formatReceiptDate(doc.invoice_date, 'Not read')}
               </div>
               <div className="klipit-paper-meta-row">
-                Invoice No: {doc.invoice_number || 'N/A'}
+                Invoice No: {doc.invoice_number || 'Not read'}
               </div>
+              {doc.tax_id && (
+                <div className="klipit-paper-meta-row">GST / Tax ID: {doc.tax_id}</div>
+              )}
               <div className="klipit-paper-meta-row">
-                Total Items: {totalItemsCount}
+                Total Items: {lineItems.length === 0 ? 'none read' : totalItemsCount}
               </div>
 
               <div className="klipit-paper-divider" />
 
               {/* Itemized Line Items List */}
               <div className="klipit-paper-items-section">
+                {lineItems.length === 0 && (
+                  <div className="klipit-paper-item-card" style={{ color: '#92400e', fontSize: '0.8rem' }}>
+                    No line items could be read from this document. Use Edit Details to add them.
+                  </div>
+                )}
                 {lineItems.map((item, idx) => (
-                  <div key={item.id || idx} className="klipit-paper-item-card">
+                  <div key={item.id || `${item.description}-${idx}`} className="klipit-paper-item-card">
                     <div className="klipit-paper-item-row">
                       <span className="item-label">Item:</span>
                       <span className="item-val bold uppercase">{item.description || 'Item'}</span>
                     </div>
                     <div className="klipit-paper-item-row">
-                      <span className="item-label">Unit Price:</span>
-                      <span className="item-val">{item.unit_price || doc.total_amount || 0}</span>
+                      <span className="item-label">Category:</span>
+                      <span className="item-val">{item.category}{item.is_suggested_category ? ' (suggested)' : ''}</span>
                     </div>
                     <div className="klipit-paper-item-row">
-                      <span className="item-label">Amount:</span>
-                      <span className="item-val">{item.total || item.unit_price || 0}</span>
+                      <span className="item-label">Unit Price:</span>
+                      <span className="item-val">{formatMoney(item.unit_price, doc.currency)}</span>
                     </div>
                     <div className="klipit-paper-item-row">
                       <span className="item-label">Qty:</span>
-                      <span className="item-val">{item.quantity || 1}</span>
+                      <span className="item-val">{item.quantity}</span>
+                    </div>
+                    {item.tax_amount ? (
+                      <div className="klipit-paper-item-row">
+                        <span className="item-label">Tax:</span>
+                        <span className="item-val">{formatMoney(item.tax_amount, doc.currency)}</span>
+                      </div>
+                    ) : null}
+                    <div className="klipit-paper-item-row">
+                      <span className="item-label">Amount:</span>
+                      <span className="item-val">{formatMoney(item.total, doc.currency)}</span>
                     </div>
                     {idx < lineItems.length - 1 && <div className="klipit-paper-sub-divider" />}
                   </div>
@@ -356,13 +369,23 @@ export const KlipitReceiptDetailsScreen: React.FC<KlipitReceiptDetailsScreenProp
 
               <div className="klipit-paper-divider" />
 
-              {/* Total Amount Row */}
+              {/* Subtotal / Tax / Discount / Total */}
+              {doc.subtotal !== null && doc.subtotal !== undefined && doc.subtotal !== doc.total_amount && (
+                <div className="klipit-paper-meta-row">Subtotal: {formatMoney(doc.subtotal, doc.currency)}</div>
+              )}
+              {doc.tax_amount ? (
+                <div className="klipit-paper-meta-row">Tax: {formatMoney(doc.tax_amount, doc.currency)}</div>
+              ) : null}
+              {doc.discount ? (
+                <div className="klipit-paper-meta-row">Discount: -{formatMoney(doc.discount, doc.currency)}</div>
+              ) : null}
               <div className="klipit-paper-total-row">
                 <span className="total-title">Total Amount</span>
-                <span className="total-val">
-                  INR {doc.total_amount ? Number(doc.total_amount).toLocaleString() : '0'}
-                </span>
+                <span className="total-val">{totalLabel}</span>
               </div>
+              {doc.payment_status && (
+                <div className="klipit-paper-meta-row">Payment: {doc.payment_status}</div>
+              )}
             </div>
 
             {/* ZigZag Perforated Bottom Border */}
@@ -433,14 +456,14 @@ export const KlipitReceiptDetailsScreen: React.FC<KlipitReceiptDetailsScreenProp
                 <div className="bullet-icon-wrap">
                   <Info size={16} color="#16a34a" />
                 </div>
-                <span>You can edit the receipt within 24 hours</span>
+                <span>Edits update the digital record only. The original uploaded document is never changed.</span>
               </div>
 
               <div className="klipit-info-bullet">
                 <div className="bullet-icon-wrap">
                   <Info size={16} color="#16a34a" />
                 </div>
-                <span>Once a receipt is submitted for processing, edits update the digital record.</span>
+                <span>Saving an edit marks the receipt as verified and clears its review flags.</span>
               </div>
             </div>
           </div>
@@ -448,7 +471,12 @@ export const KlipitReceiptDetailsScreen: React.FC<KlipitReceiptDetailsScreenProp
           {/* Card 6: Export & Delete Actions */}
           <div className="klipit-section-card" style={{ marginBottom: '5rem' }}>
             <h2 className="klipit-card-title">Download & Export</h2>
-            <div className="klipit-export-grid">
+            {isLocalOnly && (
+              <p style={{ fontSize: '0.8rem', color: '#92400e', marginBottom: '0.75rem' }}>
+                This receipt is stored on this device only. Exports become available once it has synced to the server.
+              </p>
+            )}
+            <div className="klipit-export-grid" style={isLocalOnly ? { opacity: 0.5, pointerEvents: 'none' } : undefined}>
               <a
                 href={api.getExportExcelUrl(doc.id)}
                 download
