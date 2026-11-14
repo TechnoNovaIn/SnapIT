@@ -1,13 +1,14 @@
 import React, { useState, useEffect } from 'react';
-import { Key, Sparkles, ShieldCheck, ExternalLink, Cpu } from 'lucide-react';
+import { Key, Sparkles, ShieldCheck, ExternalLink, Cpu, Trash2 } from 'lucide-react';
 import { api } from '../api/client';
 import type { AppSettings } from '../types/document';
 
 interface SettingsViewProps {
   onShowToast: (msg: string, type: 'success' | 'error' | 'info') => void;
+  onDataReset?: () => void;
 }
 
-export const SettingsView: React.FC<SettingsViewProps> = ({ onShowToast }) => {
+export const SettingsView: React.FC<SettingsViewProps> = ({ onShowToast, onDataReset }) => {
   const [settings, setSettings] = useState<AppSettings>({
     has_api_key: false,
     gemini_model: 'gemini-2.5-flash',
@@ -53,6 +54,34 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onShowToast }) => {
       onShowToast('Failed to save settings', 'error');
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  const [isErasing, setIsErasing] = useState(false);
+
+  const handleEraseAll = async () => {
+    if (!window.confirm('Are you sure you want to permanently erase overall data? All receipts, documents, line items, and uploads will be wiped completely.')) {
+      return;
+    }
+    setIsErasing(true);
+    try {
+      await api.deleteAllDocuments();
+      if (typeof localStorage !== 'undefined') {
+        const keysToRemove: string[] = [];
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (k && (k.startsWith('snapit_vault_') || k === 'snapit_offline_docs')) {
+            keysToRemove.push(k);
+          }
+        }
+        keysToRemove.forEach((k) => localStorage.removeItem(k));
+      }
+      onShowToast('All data erased successfully! Starting fresh.', 'success');
+      if (onDataReset) onDataReset();
+    } catch {
+      onShowToast('Failed to erase all data', 'error');
+    } finally {
+      setIsErasing(false);
     }
   };
 
@@ -229,6 +258,48 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onShowToast }) => {
           </button>
         </div>
       </form>
+
+      {/* Danger Zone: Erase Overall Data */}
+      <div
+        style={{
+          marginTop: '2.5rem',
+          padding: '1.25rem',
+          background: '#fef2f2',
+          border: '1px solid #fecaca',
+          borderRadius: '12px',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '0.5rem' }}>
+          <Trash2 size={18} color="#dc2626" />
+          <h3 style={{ fontSize: '1rem', fontWeight: 700, color: '#991b1b', margin: 0 }}>
+            Danger Zone: Erase Overall Data
+          </h3>
+        </div>
+        <p style={{ fontSize: '0.825rem', color: '#b91c1c', marginBottom: '1rem', lineHeight: 1.4 }}>
+          Permanently delete all receipts, invoices, expense records, scanned images, and local vaults for a completely fresh start.
+        </p>
+        <button
+          type="button"
+          onClick={handleEraseAll}
+          disabled={isErasing}
+          style={{
+            background: '#dc2626',
+            color: '#fff',
+            border: 'none',
+            padding: '10px 18px',
+            borderRadius: '8px',
+            fontWeight: 700,
+            fontSize: '0.85rem',
+            cursor: 'pointer',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '6px',
+          }}
+        >
+          <Trash2 size={15} />
+          <span>{isErasing ? 'Erasing Everything...' : 'Erase Overall Data'}</span>
+        </button>
+      </div>
     </div>
   );
 };

@@ -20,9 +20,9 @@ router = APIRouter(prefix="/sync", tags=["sync"])
 def build_user_condition(user_id: str, user_name: Optional[str] = None):
     """
     Builds a flexible filter condition to match a user's documents across Web & Mobile devices.
-    Matches exact user_id, phone digits, and user name.
+    Matches exact user_id, phone digits, user name, or shared/unassigned documents.
     """
-    conditions = []
+    conditions = [Document.owner_id.is_(None)]
     clean_id = (user_id or "").strip()
     if clean_id:
         conditions.append(Document.owner_id == clean_id)
@@ -104,18 +104,20 @@ def sync_vault(
 
         existing = db.query(Document).filter(Document.id == doc_id).first()
         if existing:
-            # Update metadata if needed
-            if item.get("merchant_name") and item.get("merchant_name") != "Analyzing receipt with AI...":
-                existing.merchant_name = item.get("merchant_name")
-            if item.get("total_amount") is not None:
-                existing.total_amount = float(item.get("total_amount", 0))
+            # Only update if the incoming item has real, non-placeholder, non-zero values
+            incoming_merchant = (item.get("merchant_name") or "").strip()
+            if incoming_merchant and not any(p in incoming_merchant for p in ["Analyzing", "Needs Review", "Handwritten Bill"]):
+                existing.merchant_name = incoming_merchant
+            incoming_tot = item.get("total_amount")
+            if incoming_tot is not None and float(incoming_tot) > 0:
+                existing.total_amount = float(incoming_tot)
             if item.get("invoice_date"):
                 existing.invoice_date = item.get("invoice_date")
-            if item.get("invoice_number"):
+            if item.get("invoice_number") and not str(item.get("invoice_number")).startswith("INV-"):
                 existing.invoice_number = item.get("invoice_number")
             if item.get("tags"):
                 existing.tags = item.get("tags")
-            if not existing.owner_id:
+            if not existing.owner_id and user_id:
                 existing.owner_id = user_id
             if not existing.thumbnail_path and thumb_data:
                 saved_thumb = _save_b64(thumb_data, f"{doc_id}_thumb.webp")

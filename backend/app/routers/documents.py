@@ -148,7 +148,7 @@ async def process_document(
         db.commit()
 
         # Perform AI Extraction
-        extraction = OCRService.extract_document(abs_path, doc.mime_type)
+        extraction = OCRService.extract_document(abs_path, doc.mime_type, original_filename=doc.filename)
 
         # Update document fields
         doc.document_type = extraction.get("document_type") or "Receipt"

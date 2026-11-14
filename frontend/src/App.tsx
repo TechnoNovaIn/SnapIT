@@ -485,7 +485,13 @@ export const App: React.FC = () => {
               </button>
               <h2 style={{ fontSize: '1.2rem', fontWeight: 800 }}>SnapIT Settings</h2>
             </div>
-            <SettingsView onShowToast={showToast} />
+            <SettingsView
+              onShowToast={showToast}
+              onDataReset={() => {
+                refreshReceipts();
+                setCurrentScreen('main');
+              }}
+            />
           </div>
         )}
 
