@@ -258,7 +258,7 @@ async function requestJson<T>(path: string, options: RequestInit = {}, timeoutMs
 // On-device extraction (used only when no backend is reachable)
 // ---------------------------------------------------------------------------
 
-const GEMINI_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash'];
+const GEMINI_MODELS = ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-2.0-flash'];
 
 const getStoredGeminiKey = (): string => readStorage(STORAGE_KEYS.geminiKey).trim();
 
@@ -370,7 +370,7 @@ async function extractWithGeminiVision(file: File): Promise<Partial<DocumentData
 
   for (const model of GEMINI_MODELS) {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 30000);
+    const timeoutId = setTimeout(() => controller.abort(), 300000);
     try {
       const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
         method: 'POST',
@@ -589,8 +589,8 @@ export const api = {
   // 3. Process Document
   async processDocument(id: string): Promise<DocumentData> {
     if (!isLocalId(id)) {
-      // Server processing can take a while for Gemini / OCR, so allow a long timeout.
-      const data = await requestJson<DocumentData>(`/documents/${id}/process`, { method: 'POST', headers: getAuthHeaders() }, 120000);
+      // Server processing can take a while for Gemini / OCR (thinking models need 2-5 min), so allow a long timeout.
+      const data = await requestJson<DocumentData>(`/documents/${id}/process`, { method: 'POST', headers: getAuthHeaders() }, 300000);
       const existing = getLocalDocs().find((d) => d.id === id);
       if (existing?.thumbnail_url?.startsWith('data:')) data.thumbnail_url = existing.thumbnail_url;
       upsertLocalDoc(data);
@@ -805,7 +805,7 @@ export const api = {
     try {
       return await requestJson<AppSettings>('/settings', {}, 5000);
     } catch {
-      return { has_api_key: false, gemini_model: 'gemini-2.5-flash', default_currency: 'INR', ocr_engine: 'offline' };
+      return { has_api_key: false, gemini_model: 'gemini-3.8-flash', default_currency: 'INR', ocr_engine: 'offline' };
     }
   },
 

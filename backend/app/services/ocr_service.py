@@ -59,8 +59,8 @@ Return a valid JSON object matching this schema:
 }
 """
 
-# Models tried in order after the configured one. gemini-1.5-* is retired and no longer listed.
-_FALLBACK_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash"]
+# Models tried in order after the configured one.
+_FALLBACK_MODELS = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.0-flash"]
 
 # Errors that will not get better by switching models (bad key, quota, permissions).
 _NON_RETRYABLE_MARKERS = ("api key", "api_key", "permission_denied", "unauthenticated", "quota", "resource_exhausted", "401", "403", "429")
@@ -85,7 +85,14 @@ class OCRService:
     @staticmethod
     def looks_like_google_key(api_key: Optional[str]) -> bool:
         key = (api_key or "").strip()
-        return len(key) > 25 and key.startswith("AIza")
+        if len(key) < 20:
+            return False
+        # Accept AIza* (AI Studio) and other Google Cloud API key formats
+        if key.startswith("AIza"):
+            return True
+        # Google Cloud keys can have various prefixes; accept anything that
+        # looks like a real key (long enough, printable ASCII, no spaces).
+        return bool(re.fullmatch(r"[A-Za-z0-9_.+/=-]{20,}", key))
 
     @staticmethod
     def describe_engine(api_key: Optional[str]) -> str:
@@ -116,7 +123,7 @@ class OCRService:
                     return setting.value.strip()
         except Exception as e:
             logger.warning("Could not read gemini_model setting: %s", e)
-        return os.getenv("GEMINI_MODEL", settings.GEMINI_MODEL).strip() or "gemini-2.5-flash"
+        return os.getenv("GEMINI_MODEL", settings.GEMINI_MODEL).strip() or "gemini-3.8-flash"
 
     @classmethod
     def extract_document(cls, file_path: Union[str, Path], mime_type: str, original_filename: Optional[str] = None) -> Dict[str, Any]:
@@ -148,7 +155,7 @@ class OCRService:
                         break
                     logger.warning("Gemini model %s error: %s. Trying next...", candidate, e)
         elif api_key:
-            logger.info("GEMINI_API_KEY does not look like a Google AI Studio key (AIza...). Using local engine.")
+            logger.info("GEMINI_API_KEY present but not recognized as a valid key format. Using local engine.")
 
         logger.info("Using local extraction engine...")
         result = cls._extract_with_local_engine(file_path, mime_type, original_filename=original_filename)
@@ -160,7 +167,7 @@ class OCRService:
         from google import genai
         from google.genai import types
 
-        client = genai.Client(api_key=api_key)
+        client = genai.Client(api_key=api_key, http_options={"timeout": 300})
 
         with open(file_path, "rb") as f:
             file_bytes = f.read()
