@@ -14,6 +14,12 @@ const inMonth = (r: DocumentListItem, year: number, month: number): boolean => {
   return !!d && d.getFullYear() === year && d.getMonth() === month;
 };
 
+const uploadedInMonth = (r: DocumentListItem, year: number, month: number): boolean => {
+  if (!r.created_at) return false;
+  const d = new Date(r.created_at);
+  return !isNaN(d.getTime()) && d.getFullYear() === year && d.getMonth() === month;
+};
+
 interface KlipitHomeScreenProps {
   receipts: DocumentListItem[];
   onOpenReceipt: (id: string) => void;
@@ -45,17 +51,17 @@ export const KlipitHomeScreen: React.FC<KlipitHomeScreenProps> = ({
 }) => {
   const [selectedMonth, setSelectedMonth] = useState<Period>('This month');
 
-  // Monthly stats derived from receipt dates (invoice date, falling back to upload date)
+  // Monthly stats: "saved" count uses upload date, expenditure uses upload date for grouping
   const today = new Date();
   const lastMonth = new Date(today.getFullYear(), today.getMonth() - 1, 1);
-  const countThisMonth = receipts.filter((r) => inMonth(r, today.getFullYear(), today.getMonth())).length;
+  const countThisMonth = receipts.filter((r) => uploadedInMonth(r, today.getFullYear(), today.getMonth())).length;
   const sum = (list: DocumentListItem[]) => list.reduce((acc, r) => acc + (Number(r.total_amount) || 0), 0);
   const allTimeTotal = sum(receipts);
   const totalExpenditure =
     selectedMonth === 'This month'
-      ? sum(receipts.filter((r) => inMonth(r, today.getFullYear(), today.getMonth())))
+      ? sum(receipts.filter((r) => uploadedInMonth(r, today.getFullYear(), today.getMonth())))
       : selectedMonth === 'Last month'
-        ? sum(receipts.filter((r) => inMonth(r, lastMonth.getFullYear(), lastMonth.getMonth())))
+        ? sum(receipts.filter((r) => uploadedInMonth(r, lastMonth.getFullYear(), lastMonth.getMonth())))
         : allTimeTotal;
   const donutRatio = allTimeTotal > 0 ? Math.min(totalExpenditure / allTimeTotal, 1) : 0;
   const currency = receipts[0]?.currency || 'INR';

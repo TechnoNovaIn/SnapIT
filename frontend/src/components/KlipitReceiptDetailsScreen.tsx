@@ -307,7 +307,7 @@ export const KlipitReceiptDetailsScreen: React.FC<KlipitReceiptDetailsScreenProp
               <div className="klipit-paper-merchant">
                 {merchantLabel}
               </div>
-              {doc.merchant_address && (
+              {doc.merchant_address && doc.merchant_address.length <= 200 && (
                 <div className="klipit-paper-meta-row">{doc.merchant_address}</div>
               )}
 

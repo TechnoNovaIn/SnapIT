@@ -14,17 +14,70 @@ from ..models import AppSetting
 
 logger = logging.getLogger(__name__)
 
-EXTRACTION_SYSTEM_PROMPT = """You are an expert AI document reader specializing in invoices, bills, receipts, purchase orders, medical bills, fuel bills, utility bills, and transport documents.
+EXTRACTION_SYSTEM_PROMPT = """You are an advanced Universal AI Bill & Invoice Extraction Engine.
 
-Analyze the uploaded document image/PDF with extreme precision. Extract the real structured information following these strict rules:
-1. NEVER invent or hallucinate missing data. If an invoice number, date, tax amount, or line item is not clearly visible, return null for that field.
-2. If text or a field is handwritten or ambiguous, mark the field name in the "uncertain_fields" array and provide your best reading or null.
-3. Line items: Extract each item with exact description, quantity, unit_price, tax_amount, and total. Categorize each line item (e.g. Travel, Medical, Fuel, Office Supplies, Purchase, Utility Bill, Food & Beverage, Professional Services, Other). Set "is_suggested_category": true if you inferred the category.
-4. Currency: Detect and preserve the exact ISO 4217 currency code (e.g. "INR", "USD", "EUR", "GBP"). For Indian receipts (₹, Rs, INR), use "INR".
-5. Tax details: Extract GST / VAT / Tax registration number if present (e.g., Indian GSTIN format).
-6. Document type: One of ["Receipt", "Tax Invoice", "Purchase Order", "Utility Bill", "Medical Bill", "Transport Bill", "Fuel Bill", "Fee Receipt", "Other"].
-7. Calculate/extract subtotal, discount, tax_amount, and total_amount. Dates must be ISO format YYYY-MM-DD when the date is readable.
-8. Suggest 2-4 concise tags for categorizing this document (e.g., ["Medical", "Pharmacy", "Reimbursement"] or ["Fuel", "Travel"]).
+Your job: read, understand, and extract EVERY piece of structured data from the uploaded financial document image/PDF with extreme precision.
+
+CRITICAL RULES — FOLLOW EXACTLY:
+1. NEVER invent, guess, or hallucinate data. If a field is not visible or readable, return null.
+2. Extract the EXACT values as printed/written. Never silently correct or round amounts.
+3. If text is handwritten or ambiguous, provide your best reading AND add the field name to "uncertain_fields".
+4. Mathematical validation must NEVER override the original document. If the bill has an arithmetic error, extract the printed values and note the discrepancy in "uncertain_fields".
+
+DOCUMENT TYPES SUPPORTED:
+Handwritten shop bills, printed invoices, retail/grocery bills, bus/train/flight tickets, electricity/water/gas bills, mobile/internet bills, restaurant/hotel bills, hospital/medical/pharmacy bills, fuel receipts, vehicle service bills, rent receipts, GST/tax invoices, digital PDF invoices, scanned documents, screenshots, QR-code receipts, international invoices, and any other financial document.
+
+MULTILINGUAL SUPPORT:
+Automatically detect and handle: English, Kannada, Hindi, Tamil, Telugu, Malayalam, Marathi, Bengali, Gujarati, Punjabi, Urdu, and all other languages. Handle mixed-language documents. Preserve original item names and descriptions in their original language.
+
+FIELD EXTRACTION — BE PRECISE:
+
+A. VENDOR/MERCHANT INFORMATION:
+   - merchant_name: The business/shop/vendor name ONLY. Do NOT include GSTIN, phone numbers, addresses, or registration numbers in this field. Examples: "Sri Raghavendraswamy Enterprises", "Super Mart", "Apollo Pharmacy". If the name starts with "Sri"/"Shri"/"M/s", include it.
+   - merchant_address: Physical address only (street, city, state, PIN). Keep under 200 chars.
+   - tax_id: GSTIN, VAT number, or tax registration. Indian GSTIN format: 2-digit state code + 10-char PAN + 1 check digit + Z + 1 alphanumeric (e.g., "29AABCU9603R1ZM"). Extract ONLY the registration number, not labels.
+
+B. INVOICE/DOCUMENT DETAILS:
+   - invoice_number: The actual invoice/bill/receipt number. NOT a phone number, NOT a GSTIN, NOT a name. Look for labels like "Invoice No", "Bill No", "Receipt No", "Ref No", "Voucher No".
+   - invoice_date: In ISO format YYYY-MM-DD when readable. Parse Indian date formats (DD-MM-YYYY, DD/MM/YYYY) correctly.
+   - due_date: If present, in ISO format.
+
+C. LINE ITEMS — EXTRACT EVERY SINGLE ITEM:
+   - Extract each product/service as a separate line item with: description, quantity, unit_price, tax_amount, total.
+   - For handwritten bills: carefully read each handwritten line. Pay extra attention to handwritten numbers — distinguish 1/7, 3/8, 5/6, 0/6, 4/9.
+   - Include serial numbers in the description if present.
+   - Categorize each item: "Medical", "Fuel", "Travel", "Office Supplies", "Groceries", "Food & Beverage", "Vehicle Maintenance", "Utility Bill", "Professional Services", "Purchase", "Other".
+   - Set "is_suggested_category": true when you infer the category.
+   - NEVER skip items, even handwritten additions or corrections.
+
+D. FINANCIAL AMOUNTS — HIGHEST PRIORITY:
+   - subtotal: Sum before taxes/discounts.
+   - discount: Any discount applied.
+   - tax_amount: Total tax (CGST + SGST + IGST or VAT or other taxes).
+   - total_amount: The final grand total / amount payable. This is the MOST IMPORTANT field.
+   - For handwritten amounts: examine each digit carefully. If amount-in-words is present, cross-verify with the numeric amount.
+   - Currency: Detect ISO 4217 code. For Indian documents (₹, Rs, INR, GSTIN present), use "INR".
+
+E. PAYMENT INFORMATION:
+   - payment_status: "Paid", "Unpaid", "Partial", or null if not stated.
+
+F. CONFIDENCE AND UNCERTAINTY:
+   - confidence_score: 0.0 to 1.0 reflecting overall extraction quality. Lower for handwritten, blurry, or partially readable documents.
+   - uncertain_fields: List field names where extraction was uncertain. Be honest — if a handwritten digit could be 3 or 8, flag it.
+
+G. TAGS:
+   - 2-4 concise tags for categorization (e.g., ["Tax Invoice", "Groceries", "GST"]).
+
+COMMON MISTAKES TO AVOID:
+- Do NOT put GSTIN numbers, phone numbers, or addresses in merchant_name.
+- Do NOT extract "Wholesale", "Retail", "Dealers", "Broker" as invoice numbers — these are business descriptions.
+- Do NOT return a phone number as an invoice number.
+- Do NOT merge multiple fields into one (e.g., "GSTIN.. Mob. 123456 Shop Name" as merchant name).
+- Do NOT return ₹3.00 as total when the actual bill total is clearly different.
+- For "Sri"/"Shri" prefixed names, include the honorific (e.g., "Sri Raghavendraswamy Enterprises").
+
+DOCUMENT TYPE classification:
+One of: "Receipt", "Tax Invoice", "Purchase Order", "Utility Bill", "Medical Bill", "Transport Bill", "Fuel Bill", "Fee Receipt", "Rent Receipt", "Other".
 
 Return a valid JSON object matching this schema:
 {
@@ -33,16 +86,16 @@ Return a valid JSON object matching this schema:
   "merchant_address": string or null,
   "customer_name": string or null,
   "invoice_number": string or null,
-  "invoice_date": string or null,
+  "invoice_date": string or null (ISO YYYY-MM-DD),
   "due_date": string or null,
   "tax_id": string or null,
-  "currency": string,
+  "currency": string (ISO 4217),
   "subtotal": float or null,
   "discount": float or null,
   "tax_amount": float or null,
   "total_amount": float or null,
   "payment_status": string or null,
-  "confidence_score": float (between 0.0 and 1.0),
+  "confidence_score": float (0.0 to 1.0),
   "tags": [string],
   "uncertain_fields": [string],
   "line_items": [
@@ -60,10 +113,15 @@ Return a valid JSON object matching this schema:
 """
 
 # Models tried in order after the configured one.
-_FALLBACK_MODELS = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.0-flash"]
+_FALLBACK_MODELS = ["gemini-3.8-flash"]
 
 # Errors that will not get better by switching models (bad key, quota, permissions).
 _NON_RETRYABLE_MARKERS = ("api key", "api_key", "permission_denied", "unauthenticated", "quota", "resource_exhausted", "401", "403", "429")
+
+# 503 "high demand" errors are temporary — retry with backoff.
+_RETRYABLE_MARKERS = ("503", "unavailable", "high demand", "overloaded", "try again")
+_MAX_RETRIES = 3
+_RETRY_DELAY_SECONDS = 10
 
 
 def _to_float(value, default: Optional[float] = None) -> Optional[float]:
@@ -137,26 +195,39 @@ class OCRService:
         model_name = cls.get_configured_model()
 
         if cls.looks_like_google_key(api_key):
+            import time as _time
+
             candidate_models = [model_name] + _FALLBACK_MODELS
             seen = set()
             unique_models = [m for m in candidate_models if m and not (m in seen or seen.add(m))]
 
             for candidate in unique_models:
-                try:
-                    logger.info("Trying Gemini API (%s)...", candidate)
-                    result = cls._extract_with_gemini(file_path, mime_type, api_key, candidate)
-                    if result:
-                        result["engine"] = f"gemini:{candidate}"
-                        return result
-                except Exception as e:
-                    msg = str(e).lower()
-                    if any(marker in msg for marker in _NON_RETRYABLE_MARKERS):
-                        logger.warning("Gemini request rejected (%s); not retrying other models: %s", candidate, e)
+                for attempt in range(1, _MAX_RETRIES + 1):
+                    try:
+                        logger.info("Trying Gemini API (%s) attempt %d/%d...", candidate, attempt, _MAX_RETRIES)
+                        result = cls._extract_with_gemini(file_path, mime_type, api_key, candidate)
+                        if result:
+                            result["engine"] = f"gemini:{candidate}"
+                            return result
+                    except Exception as e:
+                        msg = str(e).lower()
+                        if any(marker in msg for marker in _NON_RETRYABLE_MARKERS):
+                            logger.warning("Gemini request rejected (%s); not retrying: %s", candidate, e)
+                            return cls._fallback_to_local(file_path, mime_type, original_filename)
+                        if any(marker in msg for marker in _RETRYABLE_MARKERS) and attempt < _MAX_RETRIES:
+                            wait = _RETRY_DELAY_SECONDS * attempt
+                            logger.info("Gemini %s returned retryable error, waiting %ds before retry: %s", candidate, wait, e)
+                            _time.sleep(wait)
+                            continue
+                        logger.warning("Gemini model %s error (attempt %d): %s. Trying next...", candidate, attempt, e)
                         break
-                    logger.warning("Gemini model %s error: %s. Trying next...", candidate, e)
         elif api_key:
             logger.info("GEMINI_API_KEY present but not recognized as a valid key format. Using local engine.")
 
+        return cls._fallback_to_local(file_path, mime_type, original_filename)
+
+    @classmethod
+    def _fallback_to_local(cls, file_path: Path, mime_type: str, original_filename: Optional[str] = None) -> Dict[str, Any]:
         logger.info("Using local extraction engine...")
         result = cls._extract_with_local_engine(file_path, mime_type, original_filename=original_filename)
         result["engine"] = "local"
@@ -167,7 +238,11 @@ class OCRService:
         from google import genai
         from google.genai import types
 
-        client = genai.Client(api_key=api_key, http_options={"timeout": 300})
+        import httpx as _httpx
+        client = genai.Client(api_key=api_key, http_options={
+            "timeout": 300000,
+            "client_args": {"timeout": _httpx.Timeout(300.0)},
+        })
 
         with open(file_path, "rb") as f:
             file_bytes = f.read()
@@ -456,6 +531,11 @@ class OCRService:
 
         def is_address_text(s: str) -> bool:
             c = s.strip().lower()
+            if len(c) > 200:
+                return False
+            invoice_noise = ["hsn", "cgst", "sgst", "igst", "grand total", "particulars", "receivers signature"]
+            if any(w in c for w in invoice_noise):
+                return False
             address_words = [
                 "station road", "road", "street", "nagar", "colony", "layout", "cross", "main",
                 "floor", "bldg", "building", "complex", "plot", "shop no", "opp", "opposite",
@@ -526,7 +606,7 @@ class OCRService:
         if not merchant_address and lines:
             for line in lines[1:6]:
                 if is_address_text(line):
-                    merchant_address = line
+                    merchant_address = line[:200].strip()
                     break
 
         if merchant_name:
@@ -541,7 +621,10 @@ class OCRService:
             "for", "mob", "mobile", "cell", "phone", "date", "cash", "credit", "to", "the", "and",
             "of", "in", "at", "by", "is", "payment", "state", "bank", "receipt", "invoice", "bill",
             "memo", "total", "amount", "rs", "inr", "erence", "reference", "references", "other",
-            "delivery", "note", "dated", "challan", "order", "no", "number"
+            "delivery", "note", "dated", "challan", "order", "no", "number",
+            "wholesale", "retail", "dealers", "stationery", "general", "goods", "product", "refresh",
+            "broker", "enterprises", "marketing", "services", "traders", "agency", "agencies",
+            "pvt", "ltd", "company",
         }
         invoice_number = None
 
@@ -773,7 +856,8 @@ class OCRService:
     def _validate_and_normalize(cls, data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Coerces model output into clean types: numbers may arrive as strings, lists may be missing,
-        and the confidence score must stay within [0, 1].
+        and the confidence score must stay within [0, 1].  Also sanitizes merchant_name and
+        invoice_number to catch common Gemini extraction errors.
         """
         data["document_type"] = str(data.get("document_type") or "Receipt")
         data["currency"] = str(data.get("currency") or "INR").upper()[:10]
@@ -787,6 +871,45 @@ class OCRService:
         for key in ("merchant_name", "merchant_address", "customer_name", "invoice_number", "invoice_date", "due_date", "tax_id", "payment_status"):
             val = data.get(key)
             data[key] = str(val).strip() if val not in (None, "", "null", "None") else None
+
+        # --- Post-extraction sanitization ---
+
+        # Clean merchant_name: strip GSTIN, phone numbers, "Mob.", "GSTIN:" prefixes
+        if data.get("merchant_name"):
+            name = data["merchant_name"]
+            name = re.sub(r'\b\d{2}[A-Z]{5}\d{4}[A-Z][A-Z\d]Z[A-Z\d]\b', '', name)
+            name = re.sub(r'(?:GSTIN|GST\s*No|TIN|PAN|CIN|FSSAI)[\s.:/-]*[A-Za-z0-9]+', '', name, flags=re.I)
+            name = re.sub(r'(?:Mob(?:ile)?|Cell|Ph(?:one)?|Tel|Contact|Fax)[\s.:/-]*[\d\s+()-]{7,}', '', name, flags=re.I)
+            name = re.sub(r'\b\d{10,}\b', '', name)
+            name = re.sub(r'[,.\s]+$', '', name).strip(' -:|.,')
+            data["merchant_name"] = name[:255] if name and len(name) >= 2 else None
+
+        # Clean merchant_address: cap at 200 chars, reject raw OCR dumps
+        if data.get("merchant_address"):
+            addr = data["merchant_address"]
+            if len(addr) > 200:
+                data["merchant_address"] = None
+            else:
+                noise = ["hsn", "cgst", "sgst", "igst", "grand total", "particulars", "receivers signature"]
+                if any(w in addr.lower() for w in noise):
+                    data["merchant_address"] = None
+
+        # Clean invoice_number: reject business-description words and phone numbers
+        if data.get("invoice_number"):
+            inv = data["invoice_number"].strip()
+            inv_stop = {
+                "wholesale", "retail", "dealers", "broker", "stationery", "general",
+                "goods", "product", "refresh", "enterprises", "marketing", "services",
+                "traders", "agency", "agencies", "pvt", "ltd", "company",
+            }
+            if inv.lower() in inv_stop:
+                data["invoice_number"] = None
+                if "invoice_number" not in data["uncertain_fields"]:
+                    data["uncertain_fields"].append("invoice_number")
+            elif re.fullmatch(r'\d{10,}', inv):
+                data["invoice_number"] = None
+                if "invoice_number" not in data["uncertain_fields"]:
+                    data["uncertain_fields"].append("invoice_number")
 
         conf = _to_float(data.get("confidence_score"), 0.85)
         data["confidence_score"] = min(max(conf, 0.0), 1.0)
