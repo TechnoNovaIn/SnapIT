@@ -113,15 +113,15 @@ Return a valid JSON object matching this schema:
 """
 
 # Models tried in order after the configured one.
-_FALLBACK_MODELS = ["gemini-3.8-flash"]
+_FALLBACK_MODELS = ["gemini-3.5-flash", "gemini-3.5-flash-lite"]
 
 # Errors that will not get better by switching models (bad key, quota, permissions).
 _NON_RETRYABLE_MARKERS = ("api key", "api_key", "permission_denied", "unauthenticated", "quota", "resource_exhausted", "401", "403", "429")
 
-# 503 "high demand" errors are temporary — retry with backoff.
-_RETRYABLE_MARKERS = ("503", "unavailable", "high demand", "overloaded", "try again")
-_MAX_RETRIES = 3
-_RETRY_DELAY_SECONDS = 10
+# 503 / 504 errors: quick failover instead of minutes of backoff.
+_RETRYABLE_MARKERS = ("503", "unavailable", "high demand", "overloaded", "try again", "504", "deadline")
+_MAX_RETRIES = 1
+_RETRY_DELAY_SECONDS = 1
 
 
 def _to_float(value, default: Optional[float] = None) -> Optional[float]:
@@ -181,7 +181,7 @@ class OCRService:
                     return setting.value.strip()
         except Exception as e:
             logger.warning("Could not read gemini_model setting: %s", e)
-        return os.getenv("GEMINI_MODEL", settings.GEMINI_MODEL).strip() or "gemini-3.8-flash"
+        return os.getenv("GEMINI_MODEL", settings.GEMINI_MODEL).strip() or "gemini-3.5-flash"
 
     @classmethod
     def extract_document(cls, file_path: Union[str, Path], mime_type: str, original_filename: Optional[str] = None) -> Dict[str, Any]:
@@ -195,32 +195,29 @@ class OCRService:
         model_name = cls.get_configured_model()
 
         if cls.looks_like_google_key(api_key):
-            import time as _time
+            # Normalize deprecated or problematic models
+            raw_model = (model_name or "").strip()
+            if not raw_model or raw_model in ("gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.5-flash-lite"):
+                raw_model = "gemini-3.5-flash"
 
-            candidate_models = [model_name] + _FALLBACK_MODELS
+            candidate_models = [raw_model] + [m for m in _FALLBACK_MODELS if m != raw_model]
             seen = set()
             unique_models = [m for m in candidate_models if m and not (m in seen or seen.add(m))]
 
             for candidate in unique_models:
-                for attempt in range(1, _MAX_RETRIES + 1):
-                    try:
-                        logger.info("Trying Gemini API (%s) attempt %d/%d...", candidate, attempt, _MAX_RETRIES)
-                        result = cls._extract_with_gemini(file_path, mime_type, api_key, candidate)
-                        if result:
-                            result["engine"] = f"gemini:{candidate}"
-                            return result
-                    except Exception as e:
-                        msg = str(e).lower()
-                        if any(marker in msg for marker in _NON_RETRYABLE_MARKERS):
-                            logger.warning("Gemini request rejected (%s); not retrying: %s", candidate, e)
-                            return cls._fallback_to_local(file_path, mime_type, original_filename)
-                        if any(marker in msg for marker in _RETRYABLE_MARKERS) and attempt < _MAX_RETRIES:
-                            wait = _RETRY_DELAY_SECONDS * attempt
-                            logger.info("Gemini %s returned retryable error, waiting %ds before retry: %s", candidate, wait, e)
-                            _time.sleep(wait)
-                            continue
-                        logger.warning("Gemini model %s error (attempt %d): %s. Trying next...", candidate, attempt, e)
-                        break
+                try:
+                    logger.info("Extracting with Gemini Vision (%s)...", candidate)
+                    result = cls._extract_with_gemini(file_path, mime_type, api_key, candidate)
+                    if result:
+                        result["engine"] = f"gemini:{candidate}"
+                        return result
+                except Exception as e:
+                    msg = str(e).lower()
+                    if any(marker in msg for marker in _NON_RETRYABLE_MARKERS):
+                        logger.warning("Gemini request rejected (%s); falling back to local: %s", candidate, e)
+                        return cls._fallback_to_local(file_path, mime_type, original_filename)
+                    logger.warning("Gemini model %s error: %s. Trying next...", candidate, e)
+                    continue
         elif api_key:
             logger.info("GEMINI_API_KEY present but not recognized as a valid key format. Using local engine.")
 
@@ -237,11 +234,16 @@ class OCRService:
     def _extract_with_gemini(cls, file_path: Path, mime_type: str, api_key: str, model_name: str) -> Optional[Dict[str, Any]]:
         from google import genai
         from google.genai import types
-
         import httpx as _httpx
+
+        if not file_path.exists():
+            logger.warning("File does not exist for extraction: %s", file_path)
+            return None
+
+        # 15 second strict client timeout so requests NEVER hang for 5 minutes
         client = genai.Client(api_key=api_key, http_options={
-            "timeout": 300000,
-            "client_args": {"timeout": _httpx.Timeout(300.0)},
+            "timeout": 15000,
+            "client_args": {"timeout": _httpx.Timeout(15.0)},
         })
 
         with open(file_path, "rb") as f:
@@ -252,14 +254,34 @@ class OCRService:
             EXTRACTION_SYSTEM_PROMPT
         ]
 
-        response = client.models.generate_content(
-            model=model_name,
-            contents=contents,
-            config=types.GenerateContentConfig(
+        # For models supporting thinking_config (like gemini-3.5-flash), disable thinking budget to eliminate 2-5 min latency
+        response = None
+        try:
+            config = types.GenerateContentConfig(
                 response_mime_type="application/json",
-                temperature=0.1
+                temperature=0.1,
+                thinking_config=types.ThinkingConfig(thinking_budget=0)
             )
-        )
+            response = client.models.generate_content(
+                model=model_name,
+                contents=contents,
+                config=config
+            )
+        except Exception as think_err:
+            err_str = str(think_err).lower()
+            if "thinking" in err_str or "invalid_argument" in err_str or "400" in err_str:
+                # Fallback to standard config without thinking_config for models that don't accept thinking_budget
+                config = types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    temperature=0.1
+                )
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=contents,
+                    config=config
+                )
+            else:
+                raise think_err
 
         text = (getattr(response, "text", None) or "").strip()
         if not text:
@@ -340,10 +362,13 @@ class OCRService:
             if image.mode != "RGB":
                 image = image.convert("RGB")
 
-            # Upscale small images; OCR engines do much better above ~1200px wide
+            # Normalize image size: upscale tiny images, downscale massive 20+ megapixel photos
             w, h = image.size
             base_img = image
-            if w < 1200:
+            if max(w, h) > 2200:
+                scale = 2200 / max(w, h)
+                base_img = image.resize((int(w * scale), int(h * scale)), Image.Resampling.LANCZOS)
+            elif w < 1200:
                 scale = 1200 / max(w, 1)
                 base_img = image.resize((1200, int(h * scale)), Image.Resampling.LANCZOS)
 

@@ -30,11 +30,11 @@ const engineLabel = (settings: AppSettings): { title: string; detail: string; on
 export const SettingsView: React.FC<SettingsViewProps> = ({ onShowToast, onDataReset }) => {
   const [settings, setSettings] = useState<AppSettings>({
     has_api_key: false,
-    gemini_model: 'gemini-3.8-flash',
+    gemini_model: 'gemini-3.5-flash',
     default_currency: 'INR',
   });
   const [apiKeyInput, setApiKeyInput] = useState('');
-  const [geminiModel, setGeminiModel] = useState('gemini-3.8-flash');
+  const [geminiModel, setGeminiModel] = useState('gemini-3.5-flash');
   const [defaultCurrency, setDefaultCurrency] = useState('INR');
   const [serverUrlInput, setServerUrlInput] = useState(() => api.getCustomBaseUrl());
   const [isSaving, setIsSaving] = useState(false);
@@ -54,7 +54,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onShowToast, onDataR
       .then((res) => {
         if (cancelled) return;
         setSettings(res);
-        setGeminiModel(res.gemini_model || 'gemini-3.8-flash');
+        setGeminiModel(res.gemini_model || 'gemini-3.5-flash');
         setDefaultCurrency(res.default_currency || 'INR');
       })
       .catch(() => {
@@ -229,9 +229,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onShowToast, onDataR
             value={geminiModel}
             onChange={(e) => setGeminiModel(e.target.value)}
           >
-            <option value="gemini-3.8-flash">Gemini 3.8 Flash (Recommended)</option>
-            <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
-            <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
+            <option value="gemini-3.5-flash">Gemini 3.5 Flash (Recommended - Blazing Fast)</option>
+            <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash-Lite (Fast & Lightweight)</option>
+            <option value="gemini-3.8-flash">Gemini 3.8 Flash (High Precision)</option>
           </select>
           <div className="form-help">
             Multimodal models analyze handwriting, printed tables, GST stamps, and receipt typography.
