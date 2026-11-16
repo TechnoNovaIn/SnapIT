@@ -6,12 +6,21 @@ import {
   ChevronRight,
   X,
   Check,
+  Fuel,
+  Truck,
+  GraduationCap,
+  FileText,
+  Stethoscope,
+  ShoppingBag,
+  Receipt,
+  Layers,
 } from 'lucide-react';
-import { formatMoney, parseReceiptDate } from '../utils/format';
+import { formatMoney, parseReceiptDate, formatReceiptDate } from '../utils/format';
 
 interface ExpenditureAnalysisScreenProps {
   receipts: DocumentListItem[];
   onBack: () => void;
+  onSelectReceipt?: (receipt: DocumentListItem) => void;
 }
 
 const MONTHS = [
@@ -21,9 +30,10 @@ const MONTHS = [
 const MONTH_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 type Period = 'This month' | 'Last month' | 'All time';
+type DateMode = 'upload' | 'bill';
 
 const BUDGET_KEY = 'snapit_monthly_budget';
-const DONUT_CIRCUMFERENCE = 2 * Math.PI * 85; // r=85 in the SVG below
+const DONUT_CIRCUMFERENCE = 2 * Math.PI * 85;
 
 const readBudget = (): number | null => {
   try {
@@ -35,15 +45,26 @@ const readBudget = (): number | null => {
   }
 };
 
-/** Sum of receipt totals whose date falls in the given month. */
-const sumForMonth = (receipts: DocumentListItem[], year: number, month: number): number =>
-  receipts.reduce((acc, r) => {
-    const d = parseReceiptDate(r.invoice_date, r.created_at);
-    if (d && d.getFullYear() === year && d.getMonth() === month) return acc + (Number(r.total_amount) || 0);
-    return acc;
-  }, 0);
+const getCategoryMeta = (catName?: string) => {
+  const c = (catName || '').toLowerCase();
+  if (c.includes('fuel') || c.includes('petrol') || c.includes('diesel')) {
+    return { label: 'Fuel & Diesel', icon: Fuel, color: '#f59e0b', bg: '#fef3c7' };
+  }
+  if (c.includes('transport') || c.includes('travel') || c.includes('carrier') || c.includes('freight') || c.includes('lorry')) {
+    return { label: 'Transport & Freight', icon: Truck, color: '#3b82f6', bg: '#dbeafe' };
+  }
+  if (c.includes('fee') || c.includes('education') || c.includes('institution') || c.includes('college') || c.includes('iit')) {
+    return { label: 'Education & Fees', icon: GraduationCap, color: '#8b5cf6', bg: '#ede9fe' };
+  }
+  if (c.includes('tax') || c.includes('invoice') || c.includes('commercial') || c.includes('tyre')) {
+    return { label: 'Commercial & Invoices', icon: FileText, color: '#10b981', bg: '#d1fae5' };
+  }
+  if (c.includes('medical') || c.includes('pharmacy') || c.includes('health') || c.includes('doctor')) {
+    return { label: 'Medical & Healthcare', icon: Stethoscope, color: '#ef4444', bg: '#fee2e2' };
+  }
+  return { label: catName || 'General Expenses', icon: ShoppingBag, color: '#64748b', bg: '#f1f5f9' };
+};
 
-/** Compact axis labels: 1.2k, 45k, 1.5L (lakh) */
 const axisLabel = (v: number): string => {
   if (v >= 100000) return `${(v / 100000).toFixed(v % 100000 === 0 ? 0 : 1)}L`;
   if (v >= 1000) return `${(v / 1000).toFixed(v % 1000 === 0 ? 0 : 1)}k`;
@@ -53,17 +74,46 @@ const axisLabel = (v: number): string => {
 export const ExpenditureAnalysisScreen: React.FC<ExpenditureAnalysisScreenProps> = ({
   receipts,
   onBack,
+  onSelectReceipt,
 }) => {
   const today = new Date();
   const [selectedPeriod, setSelectedPeriod] = useState<Period>('This month');
+  // Date Mode: 'upload' (when saved in SnapIT app) or 'bill' (printed bill date)
+  const [dateMode, setDateMode] = useState<DateMode>('upload');
   const [activeMonthIdx, setActiveMonthIdx] = useState<number>(today.getMonth());
   const [activeYear, setActiveYear] = useState<number>(today.getFullYear());
+  const [selectedCategoryFilter, setSelectedCategoryFilter] = useState<string | null>(null);
 
   const [monthlyBudget, setMonthlyBudget] = useState<number | null>(readBudget);
   const [isBudgetModalOpen, setIsBudgetModalOpen] = useState(false);
   const [tempBudgetInput, setTempBudgetInput] = useState<string>(monthlyBudget ? String(monthlyBudget) : '');
 
-  // Most receipts share one currency; the dominant one is used for formatting totals.
+  // Helper to resolve receipt date based on active dateMode
+  const getReceiptDate = (r: DocumentListItem): Date => {
+    if (dateMode === 'upload' && r.created_at) {
+      const cd = new Date(r.created_at);
+      if (!isNaN(cd.getTime())) return cd;
+    }
+    const bd = parseReceiptDate(r.invoice_date);
+    if (bd && !isNaN(bd.getTime())) return bd;
+    if (r.created_at) {
+      const cd = new Date(r.created_at);
+      if (!isNaN(cd.getTime())) return cd;
+    }
+    return new Date();
+  };
+
+  // Helper to sum for specific year and month
+  const sumForMonth = (list: DocumentListItem[], y: number, m: number): number =>
+    list.reduce((acc, r) => {
+      const d = getReceiptDate(r);
+      if (d.getFullYear() === y && d.getMonth() === m) {
+        return acc + (Number(r.total_amount) || 0);
+      }
+      return acc;
+    }, 0);
+
+  // Dominant currency
   const currency = useMemo(() => {
     const counts = new Map<string, number>();
     receipts.forEach((r) => counts.set(r.currency || 'INR', (counts.get(r.currency || 'INR') || 0) + 1));
@@ -77,36 +127,115 @@ export const ExpenditureAnalysisScreen: React.FC<ExpenditureAnalysisScreenProps>
     });
     return best;
   }, [receipts]);
-  const mixedCurrencies = useMemo(() => new Set(receipts.map((r) => r.currency || 'INR')).size > 1, [receipts]);
 
-  const allTimeTotal = receipts.reduce((acc, r) => acc + (Number(r.total_amount) || 0), 0);
-  const thisMonthTotal = sumForMonth(receipts, today.getFullYear(), today.getMonth());
+  const allTimeTotal = useMemo(
+    () => receipts.reduce((acc, r) => acc + (Number(r.total_amount) || 0), 0),
+    [receipts]
+  );
+
+  const thisMonthTotal = useMemo(
+    () => sumForMonth(receipts, today.getFullYear(), today.getMonth()),
+    [receipts, dateMode]
+  );
+
   const lastMonthDate = new Date(today.getFullYear(), today.getMonth() - 1, 1);
-  const lastMonthTotal = sumForMonth(receipts, lastMonthDate.getFullYear(), lastMonthDate.getMonth());
-  const periodTotal = selectedPeriod === 'This month' ? thisMonthTotal : selectedPeriod === 'Last month' ? lastMonthTotal : allTimeTotal;
+  const lastMonthTotal = useMemo(
+    () => sumForMonth(receipts, lastMonthDate.getFullYear(), lastMonthDate.getMonth()),
+    [receipts, dateMode]
+  );
 
-  const selectedMonthTotal = sumForMonth(receipts, activeYear, activeMonthIdx);
-  const selectedMonthCount = receipts.filter((r) => {
-    const d = parseReceiptDate(r.invoice_date, r.created_at);
-    return d && d.getFullYear() === activeYear && d.getMonth() === activeMonthIdx;
-  }).length;
+  const periodTotal =
+    selectedPeriod === 'This month'
+      ? thisMonthTotal
+      : selectedPeriod === 'Last month'
+        ? lastMonthTotal
+        : allTimeTotal;
 
-  // Donut: share of the selected period against the monthly budget (or against all-time spend when no budget is set).
-  const donutRatio = monthlyBudget && selectedPeriod !== 'All time'
-    ? Math.min(periodTotal / monthlyBudget, 1)
-    : allTimeTotal > 0
-      ? Math.min(periodTotal / allTimeTotal, 1)
-      : 0;
+  // Selected Month Summary
+  const selectedMonthTotal = useMemo(
+    () => sumForMonth(receipts, activeYear, activeMonthIdx),
+    [receipts, activeYear, activeMonthIdx, dateMode]
+  );
+
+  const selectedMonthReceipts = useMemo(() => {
+    return receipts.filter((r) => {
+      const d = getReceiptDate(r);
+      return d.getFullYear() === activeYear && d.getMonth() === activeMonthIdx;
+    });
+  }, [receipts, activeYear, activeMonthIdx, dateMode]);
+
+  const selectedMonthCount = selectedMonthReceipts.length;
+
+  // Receipts to display in detailed view:
+  // If period is 'All time', show all receipts. Otherwise show selected month's receipts.
+  const displayReceipts = useMemo(() => {
+    let list = selectedPeriod === 'All time' ? receipts : selectedMonthReceipts;
+    if (selectedCategoryFilter) {
+      list = list.filter((r) => {
+        const meta = getCategoryMeta(r.document_type);
+        return meta.label === selectedCategoryFilter;
+      });
+    }
+    return list;
+  }, [receipts, selectedMonthReceipts, selectedPeriod, selectedCategoryFilter]);
+
+  // Category breakdown for currently viewed receipts
+  const categoryBreakdown = useMemo(() => {
+    const baseList = selectedPeriod === 'All time' ? receipts : selectedMonthReceipts;
+    const total = baseList.reduce((acc, r) => acc + (Number(r.total_amount) || 0), 0);
+    const map = new Map<string, { total: number; count: number; meta: ReturnType<typeof getCategoryMeta> }>();
+
+    baseList.forEach((r) => {
+      const amt = Number(r.total_amount) || 0;
+      const meta = getCategoryMeta(r.document_type);
+      const existing = map.get(meta.label);
+      if (existing) {
+        existing.total += amt;
+        existing.count += 1;
+      } else {
+        map.set(meta.label, { total: amt, count: 1, meta });
+      }
+    });
+
+    const items = Array.from(map.entries()).map(([label, data]) => ({
+      label,
+      total: data.total,
+      count: data.count,
+      meta: data.meta,
+      pct: total > 0 ? (data.total / total) * 100 : 0,
+    }));
+
+    return items.sort((a, b) => b.total - a.total);
+  }, [receipts, selectedMonthReceipts, selectedPeriod]);
+
+  // Donut ratios
+  const donutRatio =
+    monthlyBudget && selectedPeriod !== 'All time'
+      ? Math.min(periodTotal / monthlyBudget, 1)
+      : allTimeTotal > 0
+        ? Math.min(periodTotal / allTimeTotal, 1)
+        : 0;
   const donutOffset = DONUT_CIRCUMFERENCE * (1 - donutRatio);
   const overBudget = !!monthlyBudget && selectedPeriod !== 'All time' && periodTotal > monthlyBudget;
 
-  // Monthly bars for the active year
+  // Monthly timeline bars for activeYear
   const monthlyTotals = useMemo(
     () => MONTH_SHORT.map((_, idx) => sumForMonth(receipts, activeYear, idx)),
-    [receipts, activeYear]
+    [receipts, activeYear, dateMode]
   );
   const chartMax = Math.max(...monthlyTotals, monthlyBudget || 0, 1);
   const yAxis = [1, 0.75, 0.5, 0.25, 0].map((f) => axisLabel(chartMax * f));
+
+  // Available years across all receipts
+  const availableYears = useMemo(() => {
+    const years = new Set<number>();
+    years.add(today.getFullYear());
+    receipts.forEach((r) => {
+      const d = getReceiptDate(r);
+      if (d && !isNaN(d.getFullYear())) years.add(d.getFullYear());
+    });
+    return Array.from(years).sort((a, b) => b - a);
+  }, [receipts, dateMode]);
 
   const handlePrevMonth = () => {
     if (activeMonthIdx === 0) {
@@ -137,9 +266,7 @@ export const ExpenditureAnalysisScreen: React.FC<ExpenditureAnalysisScreenProps>
       setMonthlyBudget(val);
       try {
         localStorage.setItem(BUDGET_KEY, val.toString());
-      } catch {
-        /* storage unavailable */
-      }
+      } catch {}
       setIsBudgetModalOpen(false);
     }
   };
@@ -148,21 +275,66 @@ export const ExpenditureAnalysisScreen: React.FC<ExpenditureAnalysisScreenProps>
     setMonthlyBudget(null);
     try {
       localStorage.removeItem(BUDGET_KEY);
-    } catch {
-      /* storage unavailable */
-    }
+    } catch {}
     setIsBudgetModalOpen(false);
   };
 
   return (
     <div className="klipit-screen-container klipit-expenditure-screen">
-      {/* Top Navigation */}
+      {/* Top Navigation Bar */}
       <div className="klipit-top-nav-bar">
         <button className="klipit-nav-icon-btn" onClick={onBack} title="Back">
           <ChevronLeft size={24} color="#0f172a" />
         </button>
         <h1 className="klipit-details-title">Expenditure analysis</h1>
-        <div style={{ width: 32 }} /> {/* balance spacing */}
+        <div style={{ width: 32 }} />
+      </div>
+
+      {/* Date Mode Pill Switcher */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: '8px',
+          padding: '0 1rem 0.75rem',
+        }}
+      >
+        <span style={{ fontSize: '0.78rem', color: '#64748b', fontWeight: 600 }}>Group by:</span>
+        <button
+          type="button"
+          onClick={() => setDateMode('upload')}
+          style={{
+            background: dateMode === 'upload' ? '#0f172a' : '#f1f5f9',
+            color: dateMode === 'upload' ? '#ffffff' : '#475569',
+            border: 'none',
+            borderRadius: '20px',
+            padding: '5px 12px',
+            fontSize: '0.75rem',
+            fontWeight: 700,
+            cursor: 'pointer',
+            transition: 'all 0.15s ease',
+          }}
+        >
+          Saved Date (Active Period)
+        </button>
+        <button
+          type="button"
+          onClick={() => setDateMode('bill')}
+          style={{
+            background: dateMode === 'bill' ? '#0f172a' : '#f1f5f9',
+            color: dateMode === 'bill' ? '#ffffff' : '#475569',
+            border: 'none',
+            borderRadius: '20px',
+            padding: '5px 12px',
+            fontSize: '0.75rem',
+            fontWeight: 700,
+            cursor: 'pointer',
+            transition: 'all 0.15s ease',
+          }}
+        >
+          Bill Print Date
+        </button>
       </div>
 
       {/* CARD 1: Your Expenditure with Donut Chart */}
@@ -183,7 +355,7 @@ export const ExpenditureAnalysisScreen: React.FC<ExpenditureAnalysisScreenProps>
           </button>
         </div>
 
-        {/* DONUT CHART VISUALIZATION */}
+        {/* DONUT CHART */}
         <div className="klipit-donut-container">
           <svg className="klipit-donut-svg" viewBox="0 0 240 240">
             <circle cx="120" cy="120" r="85" fill="none" stroke="#f1f5f9" strokeWidth="42" />
@@ -213,14 +385,9 @@ export const ExpenditureAnalysisScreen: React.FC<ExpenditureAnalysisScreenProps>
             </div>
           </div>
         </div>
-        {mixedCurrencies && (
-          <p className="klipit-vat-disclaimer" style={{ padding: '0 0.75rem' }}>
-            * Receipts in different currencies are added together without conversion.
-          </p>
-        )}
       </div>
 
-      {/* CARD 2: Spending Summary & Monthly Budget */}
+      {/* CARD 2: Spending Summary & Month Carousel */}
       <div className="klipit-expenditure-card-white">
         <div className="klipit-card-header-row">
           <h2 className="klipit-card-title">Spending summary</h2>
@@ -243,13 +410,17 @@ export const ExpenditureAnalysisScreen: React.FC<ExpenditureAnalysisScreenProps>
           </button>
         </div>
 
-        <div style={{ display: 'flex', justifyContent: 'space-between', padding: '0 0.25rem 0.75rem', fontSize: '0.9rem', color: '#334155' }}>
-          <span>{selectedMonthCount} receipt{selectedMonthCount === 1 ? '' : 's'}</span>
-          <strong>{formatMoney(selectedMonthTotal, currency)}</strong>
+        <div style={{ display: 'flex', justifyContent: 'space-between', padding: '0 0.25rem 0.75rem', fontSize: '0.95rem', color: '#0f172a' }}>
+          <span style={{ fontWeight: 600, color: '#475569' }}>
+            {selectedMonthCount} receipt{selectedMonthCount === 1 ? '' : 's'}
+          </span>
+          <strong style={{ fontSize: '1.1rem', fontWeight: 800 }}>
+            {formatMoney(selectedMonthTotal, currency)}
+          </strong>
         </div>
 
         {monthlyBudget ? (
-          <div style={{ padding: '0 0.25rem 1rem' }}>
+          <div style={{ padding: '0 0.25rem 0.75rem' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: '#64748b', marginBottom: '6px' }}>
               <span>Budget {formatMoney(monthlyBudget, currency)}</span>
               <span style={{ color: selectedMonthTotal > monthlyBudget ? '#b91c1c' : '#16a34a', fontWeight: 600 }}>
@@ -302,12 +473,261 @@ export const ExpenditureAnalysisScreen: React.FC<ExpenditureAnalysisScreenProps>
         )}
       </div>
 
-      {/* CARD 3: Total Expenditure & Monthly Timeline Graph */}
+      {/* CARD 3: Category Breakdown (Detailed Spending by Category) */}
+      {categoryBreakdown.length > 0 && (
+        <div className="klipit-expenditure-card-white">
+          <div className="klipit-card-header-row" style={{ marginBottom: '1rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <Layers size={18} color="#0f172a" />
+              <h2 className="klipit-card-title">Spending by category</h2>
+            </div>
+            {selectedCategoryFilter && (
+              <button
+                type="button"
+                onClick={() => setSelectedCategoryFilter(null)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: '#2563eb',
+                  fontSize: '0.78rem',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                }}
+              >
+                Clear filter
+              </button>
+            )}
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            {categoryBreakdown.map((item) => {
+              const IconComp = item.meta.icon;
+              const isSelected = selectedCategoryFilter === item.label;
+              return (
+                <div
+                  key={item.label}
+                  onClick={() =>
+                    setSelectedCategoryFilter((prev) => (prev === item.label ? null : item.label))
+                  }
+                  style={{
+                    padding: '10px 12px',
+                    borderRadius: '12px',
+                    background: isSelected ? '#f8fafc' : '#ffffff',
+                    border: isSelected ? `2px solid ${item.meta.color}` : '1px solid #f1f5f9',
+                    cursor: 'pointer',
+                    transition: 'all 0.15s ease',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <div
+                        style={{
+                          width: 32,
+                          height: 32,
+                          borderRadius: '8px',
+                          background: item.meta.bg,
+                          color: item.meta.color,
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                        }}
+                      >
+                        <IconComp size={16} />
+                      </div>
+                      <div>
+                        <div style={{ fontSize: '0.85rem', fontWeight: 700, color: '#0f172a' }}>
+                          {item.label}
+                        </div>
+                        <div style={{ fontSize: '0.72rem', color: '#64748b' }}>
+                          {item.count} receipt{item.count === 1 ? '' : 's'}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div style={{ textAlign: 'right' }}>
+                      <div style={{ fontSize: '0.9rem', fontWeight: 800, color: '#0f172a' }}>
+                        {formatMoney(item.total, currency)}
+                      </div>
+                      <div style={{ fontSize: '0.72rem', color: '#64748b', fontWeight: 600 }}>
+                        {item.pct.toFixed(1)}%
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={{ height: 6, borderRadius: 3, background: '#f1f5f9', overflow: 'hidden' }}>
+                    <div
+                      style={{
+                        height: '100%',
+                        width: `${Math.min(item.pct, 100)}%`,
+                        background: item.meta.color,
+                        borderRadius: 3,
+                        transition: 'width 0.3s ease',
+                      }}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* CARD 4: Itemized Receipts Breakdown (The Core Detailed View!) */}
+      <div className="klipit-expenditure-card-white">
+        <div className="klipit-card-header-row" style={{ marginBottom: '0.85rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <Receipt size={18} color="#0f172a" />
+            <h2 className="klipit-card-title">
+              Detailed receipts ({displayReceipts.length})
+            </h2>
+          </div>
+          <span style={{ fontSize: '0.75rem', color: '#64748b', fontWeight: 600 }}>
+            {selectedPeriod === 'All time' ? 'All Time' : `${MONTH_SHORT[activeMonthIdx]} ${activeYear}`}
+          </span>
+        </div>
+
+        {displayReceipts.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: '2rem 1rem', color: '#94a3b8' }}>
+            <p style={{ fontSize: '0.9rem', fontWeight: 600 }}>No receipts found for this selection.</p>
+            <p style={{ fontSize: '0.78rem', marginTop: '4px' }}>
+              Switch Date Mode above or use the month arrows to inspect another period.
+            </p>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            {displayReceipts.map((r) => {
+              const meta = getCategoryMeta(r.document_type);
+              const IconComp = meta.icon;
+              return (
+                <div
+                  key={r.id}
+                  onClick={() => onSelectReceipt && onSelectReceipt(r)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    padding: '12px',
+                    borderRadius: '14px',
+                    background: '#f8fafc',
+                    border: '1px solid #e2e8f0',
+                    cursor: onSelectReceipt ? 'pointer' : 'default',
+                    transition: 'all 0.15s ease',
+                  }}
+                  className="expenditure-receipt-row"
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
+                    <div
+                      style={{
+                        width: 38,
+                        height: 38,
+                        borderRadius: '10px',
+                        background: meta.bg,
+                        color: meta.color,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        flexShrink: 0,
+                      }}
+                    >
+                      <IconComp size={18} />
+                    </div>
+
+                    <div style={{ minWidth: 0 }}>
+                      <div
+                        style={{
+                          fontSize: '0.88rem',
+                          fontWeight: 700,
+                          color: '#0f172a',
+                          whiteSpace: 'nowrap',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                        }}
+                      >
+                        {r.merchant_name || 'Receipt'}
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '2px' }}>
+                        <span style={{ fontSize: '0.72rem', color: '#64748b' }}>
+                          {formatReceiptDate(r.invoice_date || r.created_at)}
+                        </span>
+                        {r.invoice_number && (
+                          <span
+                            style={{
+                              fontSize: '0.68rem',
+                              background: '#e2e8f0',
+                              color: '#334155',
+                              padding: '1px 6px',
+                              borderRadius: '4px',
+                              fontWeight: 600,
+                            }}
+                          >
+                            #{r.invoice_number}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+                    <div style={{ textAlign: 'right' }}>
+                      <div style={{ fontSize: '0.95rem', fontWeight: 800, color: '#0f172a' }}>
+                        {formatMoney(r.total_amount, r.currency || currency)}
+                      </div>
+                      <div
+                        style={{
+                          fontSize: '0.68rem',
+                          color: meta.color,
+                          fontWeight: 700,
+                          textTransform: 'uppercase',
+                        }}
+                      >
+                        {r.document_type || 'Receipt'}
+                      </div>
+                    </div>
+                    {onSelectReceipt && <ChevronRight size={16} color="#94a3b8" />}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* CARD 5: Total Expenditure & Monthly Timeline Graph */}
       <div className="klipit-expenditure-card-white" style={{ marginBottom: '5rem' }}>
-        <h3 className="klipit-sub-card-title">Total expenditure {activeYear}</h3>
-        <div className="klipit-total-stat-val">{formatMoney(monthlyTotals.reduce((a, b) => a + b, 0), currency)}</div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div>
+            <h3 className="klipit-sub-card-title">Total expenditure {activeYear}</h3>
+            <div className="klipit-total-stat-val">
+              {formatMoney(monthlyTotals.reduce((a, b) => a + b, 0), currency)}
+            </div>
+          </div>
+
+          {/* Year Switcher Pills */}
+          <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
+            {availableYears.map((yr) => (
+              <button
+                key={yr}
+                type="button"
+                onClick={() => setActiveYear(yr)}
+                style={{
+                  background: activeYear === yr ? '#0f172a' : '#f1f5f9',
+                  color: activeYear === yr ? '#ffffff' : '#475569',
+                  border: 'none',
+                  borderRadius: '12px',
+                  padding: '4px 8px',
+                  fontSize: '0.72rem',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                }}
+              >
+                {yr}
+              </button>
+            ))}
+          </div>
+        </div>
+
         <p className="klipit-vat-disclaimer">
-          * Totals are taken from each receipt as read and may include tax and discounts.
+          * Totals are taken from each receipt as read and include taxes and discounts.
         </p>
 
         <div className="klipit-chart-wrapper">
@@ -375,7 +795,7 @@ export const ExpenditureAnalysisScreen: React.FC<ExpenditureAnalysisScreenProps>
                   value={tempBudgetInput}
                   onChange={(e) => setTempBudgetInput(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && handleSaveBudget()}
-                  placeholder="e.g. 5000"
+                  placeholder="e.g. 50000"
                   autoFocus
                 />
               </div>

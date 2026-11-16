@@ -2900,6 +2900,12 @@ input, select, textarea {
   transition: color 0.15s ease;
 }
 
+.expenditure-receipt-row:hover {
+  background: #f1f5f9 !important;
+  border-color: #cbd5e1 !important;
+  transform: translateY(-1px);
+}
+
 /* Spending Summary Card Elements */
 .klipit-edit-text-btn {
   font-size: 0.95rem;

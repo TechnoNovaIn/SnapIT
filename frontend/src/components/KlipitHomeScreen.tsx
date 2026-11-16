@@ -4,15 +4,10 @@ import {
   ChevronDown,
   Sparkles,
 } from 'lucide-react';
-import { displayMerchant, formatMoney, formatReceiptDate, parseReceiptDate } from '../utils/format';
+import { displayMerchant, formatMoney, formatReceiptDate } from '../utils/format';
 
 type Period = 'This month' | 'Last month' | 'All time';
 const DONUT_CIRCUMFERENCE = 2 * Math.PI * 85;
-
-const inMonth = (r: DocumentListItem, year: number, month: number): boolean => {
-  const d = parseReceiptDate(r.invoice_date, r.created_at);
-  return !!d && d.getFullYear() === year && d.getMonth() === month;
-};
 
 const uploadedInMonth = (r: DocumentListItem, year: number, month: number): boolean => {
   if (!r.created_at) return false;

@@ -475,6 +475,9 @@ export const App: React.FC = () => {
           <ExpenditureAnalysisScreen
             receipts={receiptsList}
             onBack={() => setCurrentScreen('main')}
+            onSelectReceipt={(receipt) => {
+              handleOpenReceipt(receipt.id);
+            }}
           />
         )}
 
