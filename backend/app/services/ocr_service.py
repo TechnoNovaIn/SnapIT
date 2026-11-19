@@ -112,8 +112,8 @@ Return a valid JSON object matching this schema:
 }
 """
 
-# Models tried in order after the configured one.
-_FALLBACK_MODELS = ["gemini-3.5-flash", "gemini-3.5-flash-lite"]
+# Models tried in order: prioritizing stable, low-latency models
+_FALLBACK_MODELS = ["gemini-3-flash-preview", "gemini-3.5-flash-lite", "gemini-3.5-flash"]
 
 # Errors that will not get better by switching models (bad key, quota, permissions).
 _NON_RETRYABLE_MARKERS = ("api key", "api_key", "permission_denied", "unauthenticated", "quota", "resource_exhausted", "401", "403", "429")
@@ -195,12 +195,11 @@ class OCRService:
         model_name = cls.get_configured_model()
 
         if cls.looks_like_google_key(api_key):
-            # Normalize deprecated or problematic models
+            # Prioritize the fastest and most reliable Google Vision model
+            candidate_models = ["gemini-3-flash-preview", "gemini-3.5-flash-lite", "gemini-3.5-flash"]
             raw_model = (model_name or "").strip()
-            if not raw_model or raw_model in ("gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.5-flash-lite"):
-                raw_model = "gemini-3.5-flash"
-
-            candidate_models = [raw_model] + [m for m in _FALLBACK_MODELS if m != raw_model]
+            if raw_model and raw_model not in ("gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.5-flash-lite", "gemini-3.8-flash"):
+                candidate_models.insert(0, raw_model)
             seen = set()
             unique_models = [m for m in candidate_models if m and not (m in seen or seen.add(m))]
 
@@ -216,7 +215,11 @@ class OCRService:
                     if any(marker in msg for marker in _NON_RETRYABLE_MARKERS):
                         logger.warning("Gemini request rejected (%s); falling back to local: %s", candidate, e)
                         return cls._fallback_to_local(file_path, mime_type, original_filename)
-                    logger.warning("Gemini model %s error: %s. Trying next...", candidate, e)
+                    # If host is unreachable or DNS failed completely, don't waste time trying more cloud models
+                    if any(net_err in msg for net_err in ("getaddrinfo failed", "unreachable host", "network is unreachable", "11001", "10065")):
+                        logger.warning("Network connection unreachable (%s); switching immediately to local engine: %s", candidate, e)
+                        return cls._fallback_to_local(file_path, mime_type, original_filename)
+                    logger.warning("Gemini model %s error: %s. Trying next candidate model...", candidate, e)
                     continue
         elif api_key:
             logger.info("GEMINI_API_KEY present but not recognized as a valid key format. Using local engine.")
@@ -240,7 +243,7 @@ class OCRService:
             logger.warning("File does not exist for extraction: %s", file_path)
             return None
 
-        # 15 second strict client timeout so requests NEVER hang for 5 minutes
+        # 15 second strict client timeout per candidate model
         client = genai.Client(api_key=api_key, http_options={
             "timeout": 15000,
             "client_args": {"timeout": _httpx.Timeout(15.0)},
@@ -249,19 +252,49 @@ class OCRService:
         with open(file_path, "rb") as f:
             file_bytes = f.read()
 
+        payload_bytes = file_bytes
+        payload_mime = mime_type
+
+        # Compress large images (>1600px or >800KB) so network upload takes <0.3s instead of timing out
+        if mime_type.startswith("image/"):
+            try:
+                from PIL import Image, ImageOps
+                import io
+                with Image.open(file_path) as img:
+                    img = ImageOps.exif_transpose(img)
+                    w, h = img.size
+                    max_dim = max(w, h)
+                    if max_dim > 1600 or len(file_bytes) > 800 * 1024:
+                        if max_dim > 1600:
+                            scale = 1600 / max_dim
+                            img = img.resize((int(w * scale), int(h * scale)), Image.Resampling.LANCZOS)
+                        if img.mode != "RGB":
+                            img = img.convert("RGB")
+                        buf = io.BytesIO()
+                        img.save(buf, format="JPEG", quality=85)
+                        payload_bytes = buf.getvalue()
+                        payload_mime = "image/jpeg"
+                        logger.info("Optimized bill image from %d KB down to %d KB for instant vision upload", len(file_bytes) // 1024, len(payload_bytes) // 1024)
+            except Exception as opt_err:
+                logger.warning("Image optimization skipped: %s", opt_err)
+
         contents = [
-            types.Part.from_bytes(data=file_bytes, mime_type=mime_type),
+            types.Part.from_bytes(data=payload_bytes, mime_type=payload_mime),
             EXTRACTION_SYSTEM_PROMPT
         ]
 
-        # For models supporting thinking_config (like gemini-3.5-flash), disable thinking budget to eliminate 2-5 min latency
+        # Only models that support thinking (non-lite) receive thinking_config
+        supports_thinking = "lite" not in model_name.lower()
+        config_kwargs = {
+            "response_mime_type": "application/json",
+            "temperature": 0.1,
+        }
+        if supports_thinking:
+            config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
+
         response = None
         try:
-            config = types.GenerateContentConfig(
-                response_mime_type="application/json",
-                temperature=0.1,
-                thinking_config=types.ThinkingConfig(thinking_budget=0)
-            )
+            config = types.GenerateContentConfig(**config_kwargs)
             response = client.models.generate_content(
                 model=model_name,
                 contents=contents,
@@ -269,7 +302,7 @@ class OCRService:
             )
         except Exception as think_err:
             err_str = str(think_err).lower()
-            if "thinking" in err_str or "invalid_argument" in err_str or "400" in err_str:
+            if supports_thinking and ("thinking" in err_str or "invalid_argument" in err_str or "400" in err_str):
                 # Fallback to standard config without thinking_config for models that don't accept thinking_budget
                 config = types.GenerateContentConfig(
                     response_mime_type="application/json",
@@ -298,6 +331,11 @@ class OCRService:
             if not m:
                 raise
             data = json.loads(m.group(0))
+
+        # Handle Gemini responses wrapped in an array [ { ... } ]
+        if isinstance(data, list):
+            data = next((item for item in data if isinstance(item, dict)), None)
+
         if not isinstance(data, dict):
             return None
         return cls._validate_and_normalize(data)

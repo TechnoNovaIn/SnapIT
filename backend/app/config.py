@@ -39,7 +39,7 @@ class Settings:
 
     # AI / OCR
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "").strip()
-    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.5-flash").strip() or "gemini-3.5-flash"
+    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview").strip() or "gemini-3-flash-preview"
     DEFAULT_CURRENCY: str = os.getenv("DEFAULT_CURRENCY", "INR").strip() or "INR"
 
     # CORS: comma separated list of origins, "*" allows every origin (default for local/dev use)

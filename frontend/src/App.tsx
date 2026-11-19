@@ -275,7 +275,11 @@ export const App: React.FC = () => {
     } catch (err: any) {
       setFailedAtStep(currentStep);
       setProcessingStep('failed');
-      setProcessingError(err?.message || 'Failed to process receipt');
+      const rawMsg = err?.message || '';
+      const friendlyMsg = rawMsg.toLowerCase().includes('abort')
+        ? 'Connection timed out or network was interrupted. Tap Retry Processing to try again.'
+        : rawMsg || 'Failed to process receipt';
+      setProcessingError(friendlyMsg);
     }
   };
 

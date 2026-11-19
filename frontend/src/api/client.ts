@@ -258,7 +258,7 @@ async function requestJson<T>(path: string, options: RequestInit = {}, timeoutMs
 // On-device extraction (used only when no backend is reachable)
 // ---------------------------------------------------------------------------
 
-const GEMINI_MODELS = ['gemini-3.5-flash', 'gemini-3.5-flash-lite'];
+const GEMINI_MODELS = ['gemini-3.5-flash', 'gemini-3-flash-preview', 'gemini-3.5-flash-lite'];
 
 const getStoredGeminiKey = (): string => readStorage(STORAGE_KEYS.geminiKey).trim();
 
@@ -391,7 +391,10 @@ async function extractWithGeminiVision(file: File): Promise<Partial<DocumentData
       const data = await res.json();
       const text: string | undefined = data?.candidates?.[0]?.content?.parts?.[0]?.text;
       if (!text) continue;
-      const parsed = JSON.parse(text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, ''));
+      let parsed = JSON.parse(text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, ''));
+      if (Array.isArray(parsed) && parsed.length > 0 && typeof parsed[0] === 'object') {
+        parsed = parsed[0];
+      }
 
       const items = Array.isArray(parsed.line_items)
         ? parsed.line_items
@@ -589,8 +592,8 @@ export const api = {
   // 3. Process Document
   async processDocument(id: string): Promise<DocumentData> {
     if (!isLocalId(id)) {
-      // Ultra-fast Gemini 3.5 Flash or local OCR with responsive 30s timeout
-      const data = await requestJson<DocumentData>(`/documents/${id}/process`, { method: 'POST', headers: getAuthHeaders() }, 30000);
+      // Responsive processing timeout with multi-model fallback headroom
+      const data = await requestJson<DocumentData>(`/documents/${id}/process`, { method: 'POST', headers: getAuthHeaders() }, 60000);
       const existing = getLocalDocs().find((d) => d.id === id);
       if (existing?.thumbnail_url?.startsWith('data:')) data.thumbnail_url = existing.thumbnail_url;
       upsertLocalDoc(data);
